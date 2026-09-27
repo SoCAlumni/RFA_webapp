@@ -12,61 +12,56 @@
 
 ## 실행
 
+rfa_mas 프런트 API(`make serve`, 기본 `http://127.0.0.1:8799`)에 붙어 실제 데이터로 동작합니다. mock 은 없습니다.
+
 ```bash
+cp .env.example .env.local   # RFA_API_URL, RFA_ASK_TOKEN(= rfa_mas .env.dev 의 RFA_ASK_TOKEN)
 npm install
-npm run dev          # http://localhost:3000  (→ /chat)
+npm run dev                  # http://localhost:3000  (→ /chat)
 npm run build && npm start
 ```
 
-데모 권한 전환: 처음 여는 주소에 `?role=guest` 를 붙이면 게스트(볼 수만 있음)로 봅니다.
+| 환경 변수 | 뜻 |
+|---|---|
+| `RFA_API_URL` | rfa_mas 주소. 기본 `http://127.0.0.1:8799` |
+| `RFA_ASK_TOKEN` | 소유자 토큰. 비우면 모두 게스트. 서버 쪽 프록시만 읽고 브라우저에는 보내지 않는다 |
+| `RFA_OWNER_REMOTE` | `1` 이면 원격(터널 · 다른 기기) 요청에도 소유자 토큰을 붙인다. **기본은 이 컴퓨터에서 연 화면만 소유자** |
+
+- 권한은 서버가 `GET /me` 로 정합니다. 이 컴퓨터에서 열면 소유자, 터널 · 다른 기기에서 열면 게스트입니다.
+- 게스트로 보기: 처음 여는 주소에 `?role=guest` 를 붙입니다.
+
+## 구조 — 화면 ↔ API
+
+브라우저 → `/api/rfa/*`(Next 서버 프록시, `src/app/api/rfa/[...path]/route.ts`) → rfa_mas.
+rfa_mas 에 CORS 가 없고 토큰을 숨겨야 해서 같은 origin 프록시를 둡니다. SSE 는 버퍼링 없이 그대로 흘려 보내고,
+「중지」로 브라우저가 끊으면 위로도 끊습니다.
+
+| 화면 | API (rfa_mas `docs/FE_API_GUIDE.md`, `docs/FE_APPROVAL_API_PLAN.md`) |
+|---|---|
+| 앱 시작 · 사이드바 | `GET /me`, `/tasks`, `/agents`, `/inbox/summary`, (관리자) `/admin/agents`, `/admin/sandboxes` |
+| 비서 대화 | `GET /conversations?agentId=`, `GET /conversations/{id}`, `POST /chat` (SSE). 새 대화 id 는 브라우저가 만들고 소유자면 첫 질문 때 서버가 저장. 게스트는 `history` 를 보낸다 |
+| 태스크 추가 | `POST /tasks` (SSE, 진행 화면) → 끊기면 `GET /tasks/{id}` 5초 폴링(최대 6분) |
+| 결재함 | `GET /inbox`(15초마다), `GET /inbox/{id}`(작성 · 재생성 · 게시 중이면 3초마다), `POST /inbox/{id}/respond {draft}`, `POST /inbox/{id}/regenerate {request}` |
+| 소스 | `GET/POST /tasks/{id}/sources`, `DELETE /tasks/{id}/sources/{sourceId}` |
+| 관리 · 에이전트 | `GET /admin/agents/{id}`, `POST …/compact` · `…/clear-memory`(확인 후), `GET/PUT …/prompt`, `PATCH …/sources/{id}` |
+| 관리 · 샌드박스 | `GET /admin/sandboxes/{id}`, `PATCH /admin/sandboxes/{id}`(바뀐 필드만, 제공자 변경은 확인 후) |
+
+타입은 서버 OpenAPI 그대로 `src/lib/api/types.ts`, 호출은 `src/lib/api/http.ts`(인터페이스 `src/lib/api/client.ts`).
+
+### 초안을 고쳐서 보내기
+
+「바로 응답」은 화면의 초안을 `respond {draft}` 로 보냅니다. 고친 초안은 RFA_module 결재 서버 v0.3.0 이상이면
+rfa_mas 가 등급 검사를 거쳐 그 글로 게시하고(rfa_mas `docs/proposals/RFA_MODULE_DRAFT_EDIT.md`), 옛 서버면
+409 「수정한 초안은 아직 보낼 수 없습니다」가 초안 카드에 보입니다.
 
 ## 화면 · 주소
 
 | 주소 | 화면 |
 |---|---|
 | `/chat` | 비서 에이전트와 대화 |
-| `/chat/:taskId` | 태스크 에이전트와 대화 (`training` · `inference` · `automation` · `npu` · 새로 만든 태스크) |
+| `/chat/:agentId` | 태스크 에이전트와 대화 (`GET /agents` 의 id) |
 | `/inbox` | 결재함 전체 |
 | `/inbox/:taskId` | 태스크별 결재함 |
-| `/inbox/:scope/:approvalId` | 결재 상세 — 원본 화면 + 답변 초안 (`scope` = `all` 또는 태스크 id) |
+| `/inbox/:scope/:itemId` | 결재 상세 — 원본 화면(GitHub 이슈 · Slack 스레드) + 답변 초안 (`scope` = `all` 또는 태스크 id) |
 
-관리(에이전트 · 샌드박스)는 사이드바 아래 **관리** 메뉴에서 팝업으로 엽니다. `Ctrl/⌘ K` 는 비서 대화로 이동합니다.
-
-## mock ↔ 실제 API
-
-화면 코드는 `src/lib/api/client.ts` 의 `RfaApi` 인터페이스만 씁니다. 구현은 환경 변수로 고릅니다.
-
-| `NEXT_PUBLIC_API_MODE` | 동작 |
-|---|---|
-| `mock` (기본) | 브라우저 안 mock 백엔드(`src/lib/api/mock`). 새로고침하면 처음 상태로 돌아갑니다 |
-| `http` | `NEXT_PUBLIC_API_BASE_URL` 로 REST + SSE 호출(`src/lib/api/http.ts`). 기본값 `/api/v1` 은 이 앱에 들어 있는 mock 서버 |
-
-실제 백엔드로 바꾸려면:
-
-```bash
-NEXT_PUBLIC_API_MODE=http
-NEXT_PUBLIC_API_BASE_URL=https://your-backend.example.com/api/v1
-```
-
-백엔드가 지켜야 할 계약(엔드포인트 · 대화 스트림 이벤트)은 [docs/API.md](docs/API.md) 에 있습니다.
-`NEXT_PUBLIC_` 변수는 빌드할 때 들어가므로 바꾼 뒤 다시 빌드 · 배포해야 합니다.
-
-## 구조
-
-```
-src/
-  app/
-    (app)/layout.tsx             사이드바 · 대화 · 관리 팝업이 있는 틀
-    (app)/chat/[[...agent]]      대화(틀이 늘 띄워 두어 화면을 옮겨도 답변이 이어짐)
-    (app)/inbox/[[...slug]]      결재함
-    api/v1/[...path]/route.ts    API 계약을 따르는 mock 서버
-  components/
-    shell/        AppShell · Sidebar
-    inbox/        목록 · 상세(GitHub/Slack 원본) · 답변 초안 카드
-    chat/         대화 상대 레일 · 대화창 · 진행 과정 카드
-    admin/        관리 팝업(에이전트 · 소스 · 샌드박스)
-    dialogs/      태스크 추가 등
-  lib/api/        타입 · 인터페이스 · mock · http 구현
-  lib/chat/       대화 스트림 이벤트 → 화면 상태 reducer
-  store/          화면 전체 상태(API 호출을 감쌈)
-```
+관리(에이전트 · 샌드박스)는 소유자에게만 보이는 사이드바 **관리** 메뉴에서 팝업으로 엽니다. `Ctrl/⌘ K` 는 비서 대화로 이동합니다.
