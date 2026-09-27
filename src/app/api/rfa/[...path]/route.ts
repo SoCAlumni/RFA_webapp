@@ -2,7 +2,8 @@
  * rfa_mas 프런트 API 프록시.
  * - rfa_mas 는 CORS 가 없고 루프백에서만 받으므로(FE_API_GUIDE §0.1) 같은 origin 에서 전달한다.
  * - 소유자 토큰(RFA_ASK_TOKEN)은 여기서만 붙여 브라우저에 드러나지 않게 한다.
- *   요청에 `X-RFA-Role: guest` 가 있으면 토큰을 붙이지 않는다(서버가 guest 로 본다).
+ *   이 컴퓨터(루프백)에서 연 화면에만 붙이고, 터널 · 다른 기기에서 온 요청은 게스트로 둔다
+ *   (RFA_OWNER_REMOTE=1 이면 원격에도 붙인다). `X-RFA-Role: guest` 요청에도 붙이지 않는다.
  * - SSE(`POST /chat`, `POST /tasks`)는 버퍼링 없이 그대로 흘려 보내고, 브라우저가 끊으면(중지) 위로도 끊는다.
  */
 export const dynamic = "force-dynamic";
@@ -10,6 +11,25 @@ export const runtime = "nodejs";
 
 const UPSTREAM = (process.env.RFA_API_URL ?? "http://127.0.0.1:8799").replace(/\/$/, "");
 const TOKEN = process.env.RFA_ASK_TOKEN ?? "";
+/** 1 이면 원격(터널 · 다른 기기) 요청에도 소유자 토큰을 붙인다. 기본은 이 컴퓨터에서 온 요청만 */
+const TRUST_REMOTE = process.env.RFA_OWNER_REMOTE === "1";
+
+const LOOPBACK = /^(127\.|::1$|::ffff:127\.|localhost$)/;
+
+/**
+ * 이 컴퓨터(루프백)에서 연 화면인지. 터널(cloudflared 등)은 cf-connecting-ip · x-forwarded-for 에
+ * 실제 접속자 주소를 싣는다 — 그런 요청이 소유자 권한을 얻지 못하게 한다.
+ */
+function isLocal(req: Request) {
+  if (req.headers.has("cf-connecting-ip") || req.headers.has("cf-ray")) return false;
+  const chain = (req.headers.get("x-forwarded-for") ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (chain.some((ip) => !LOOPBACK.test(ip))) return false;
+  const host = (req.headers.get("x-forwarded-host") ?? req.headers.get("host") ?? "").replace(/:\d+$/, "");
+  return host === "localhost" || LOOPBACK.test(host) || host === "[::1]";
+}
 
 /** 프런트가 쓰는 경로만 연다 (/ask, /teams 등 desk·CLI 용은 막는다) */
 const ALLOWED = /^(me|agents|tasks|conversations|chat|inbox|admin)(\/|$)/;
@@ -28,7 +48,8 @@ async function proxy(req: Request, ctx: Ctx) {
     const v = req.headers.get(h);
     if (v) headers.set(h, v);
   }
-  if (TOKEN && req.headers.get("x-rfa-role") !== "guest") headers.set("authorization", `Bearer ${TOKEN}`);
+  if (TOKEN && req.headers.get("x-rfa-role") !== "guest" && (TRUST_REMOTE || isLocal(req)))
+    headers.set("authorization", `Bearer ${TOKEN}`);
 
   const hasBody = req.method !== "GET" && req.method !== "HEAD";
   let upstream: Response;
