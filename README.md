@@ -4,7 +4,7 @@
 사람이 결재함에서 고쳐서 바로 응답하거나 재생성을 요청하는 앱입니다.
 비서 에이전트에게 물으면 맞는 담당 에이전트를 찾아 확인하고, 그 과정을 그대로 보여 줍니다.
 
-디자인 기준: `ui_ref.html` / claude.ai 아티팩트 `LFD3Utajj2ahC9wv45MbAg`
+디자인 기준: `ui_ref.html` / [claude.ai 아티팩트 (UI ref)](https://claude.ai/artifact/LFD3Utajj2ahC9wv45MbAg)
 
 ## 호스팅
 
