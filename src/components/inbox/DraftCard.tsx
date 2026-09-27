@@ -1,11 +1,10 @@
 "use client";
 
-import type { DraftState, PipelineStep } from "@/lib/api/types";
+import type { DraftPhase, InboxDetail, Step } from "@/lib/api/types";
+import { seconds } from "@/lib/format";
 import { useApp } from "@/store/app-store";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-
-const sec = (ms: number) => `${(ms / 1000).toFixed(1)}초`;
 
 const Check = () => (
   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -31,50 +30,29 @@ const Send = () => (
   </svg>
 );
 
-type StepState = "done" | "running" | "pending";
-
-function Step({
-  step,
-  state,
-  open,
-  onToggle,
-  index,
-}: {
-  step: PipelineStep;
-  state: StepState;
-  open: boolean;
-  onToggle: () => void;
-  index: number;
-}) {
-  const running = state === "running";
+function StepRow({ step, index, open, onToggle }: { step: Step; index: number; open: boolean; onToggle: () => void }) {
+  const idle = step.state === "pending" || step.state === "skipped";
+  const running = step.state === "running";
   return (
-    <li className="dc-step" data-state={state}>
+    <li className="dc-step" data-state={step.state}>
       <button
         type="button"
         className="dc-step-row"
         onClick={onToggle}
-        disabled={state === "pending"}
-        aria-expanded={state === "pending" ? undefined : open}
+        disabled={idle || !step.details.length}
+        aria-expanded={idle ? undefined : open}
       >
         <span className="dc-step-mark" aria-hidden="true">
-          {state === "done" ? <Check /> : running ? <span className="dc-spin" /> : index + 1}
+          {step.state === "done" ? <Check /> : running ? <span className="dc-spin" /> : step.state === "error" ? "!" : index + 1}
         </span>
         <b>{step.title}</b>
         <span className="dc-step-sum">
-          {state === "pending"
-            ? "대기"
-            : running
-              ? step.key === "rag"
-                ? "문서를 찾는 중…"
-                : step.key === "verify"
-                  ? "공개 범위를 검사하는 중…"
-                  : "초안을 쓰는 중…"
-              : step.summary}
+          {step.state === "pending" ? "대기" : step.state === "skipped" ? "건너뜀" : step.summary}
         </span>
-        <span className="dc-step-ms">{state === "done" ? sec(step.ms) : ""}</span>
-        {state !== "pending" && <Chevron />}
+        <span className="dc-step-ms">{step.state === "done" ? seconds(step.ms) : ""}</span>
+        {!idle && step.details.length > 0 ? <Chevron /> : <span />}
       </button>
-      {open && state !== "pending" && (
+      {open && !idle && (
         <ul className="dc-details">
           {step.details.map((d, i) => (
             <li key={i} data-tone={d.tone}>
@@ -90,7 +68,17 @@ function Step({
 
 const QUICK = ["더 짧게", "더 정중하게", "수치 언급은 빼고", "다음 안내 시점을 덧붙여서"];
 
-function RegenModal({ onCancel, onSubmit }: { onCancel: () => void; onSubmit: (text: string) => void }) {
+function RegenModal({
+  onCancel,
+  onSubmit,
+  left,
+  closes,
+}: {
+  onCancel: () => void;
+  onSubmit: (text: string) => void;
+  left: number;
+  closes: boolean;
+}) {
   const [text, setText] = useState("");
   const ref = useRef<HTMLTextAreaElement>(null);
   useEffect(() => {
@@ -117,6 +105,11 @@ function RegenModal({ onCancel, onSubmit }: { onCancel: () => void; onSubmit: (t
       <div className="dc-modal" role="dialog" aria-modal="true" aria-labelledby="dc-regen-title">
         <h2 id="dc-regen-title">재생성 요청</h2>
         <p>초안을 어떻게 바꿀지 적어 주세요. 적은 내용이 피드백으로 함께 전달되어 새 초안을 만듭니다.</p>
+        {closes ? (
+          <p className="dc-warn">이번이 마지막 재생성 요청입니다. 보내면 결재가 닫히고 응답하지 않기로 합니다.</p>
+        ) : (
+          <p className="dc-hint">재생성은 {left}번 더 요청할 수 있어요.</p>
+        )}
         <label className="dc-field">
           <span>요청 내용</span>
           <textarea
@@ -136,7 +129,7 @@ function RegenModal({ onCancel, onSubmit }: { onCancel: () => void; onSubmit: (t
         </label>
         <div className="dc-quick" aria-label="자주 쓰는 요청">
           {QUICK.map((q) => (
-            <button key={q} type="button" onClick={() => setText((t) => (t.trim() ? `${t.trim()}, ${q}` : q))}>
+            <button key={q} type="button" onClick={() => setText((t) => (t.trim() ? `${t.trim()}, ${q}` : q).slice(0, 400))}>
               {q}
             </button>
           ))}
@@ -147,7 +140,7 @@ function RegenModal({ onCancel, onSubmit }: { onCancel: () => void; onSubmit: (t
           </button>
           <button type="button" className="dc-btn dc-btn-primary" onClick={submit} disabled={!text.trim()}>
             <Regen />
-            재생성 요청
+            {closes ? "보내고 닫기" : "재생성 요청"}
           </button>
         </div>
       </div>
@@ -156,15 +149,30 @@ function RegenModal({ onCancel, onSubmit }: { onCancel: () => void; onSubmit: (t
   );
 }
 
-/** 에이전트가 올린 답변 초안: 뒷단 단계 · 편집 · 재생성 · 바로 응답 */
-export function DraftCard({ draft, readOnly }: { draft: DraftState; readOnly?: boolean }) {
-  const { setDraftText, regenerateDraft, postReply } = useApp();
+const PHASE: Record<DraftPhase, { status: string; title: string; tone: string }> = {
+  drafting: { status: "작성 중", title: "대응 에이전트가 답변 초안을 쓰고 있습니다", tone: "running" },
+  stalled: { status: "초안 없음", title: "대응 에이전트가 초안을 올리지 않았습니다", tone: "muted" },
+  ready: { status: "승인 대기", title: "이 초안으로 응답할까요?", tone: "ready" },
+  regenerating: { status: "재생성 중", title: "새 초안을 기다리는 중입니다", tone: "regenerating" },
+  posting: { status: "보내는 중", title: "승인했습니다. 게시하는 중입니다", tone: "posting" },
+  publish_failed: { status: "게시 실패", title: "게시하지 못했습니다", tone: "failed" },
+  posted: { status: "응답함", title: "이 답변으로 응답했습니다", tone: "posted" },
+  closed: { status: "닫힘", title: "응답하지 않기로 했습니다", tone: "muted" },
+};
+
+/** 결재 초안 카드: 뒷단 단계 · 편집 · 재생성 요청 · 바로 응답 */
+export function DraftCard({ detail, readOnly }: { detail: InboxDetail; readOnly?: boolean }) {
+  const { edits, setDraftText, regenerate, respond, busyItems, itemErrors } = useApp();
+  const draft = detail.draft;
   const [open, setOpen] = useState<Record<string, boolean>>({});
   const [asking, setAsking] = useState(false);
   const textRef = useRef<HTMLTextAreaElement>(null);
   const regenBtn = useRef<HTMLButtonElement>(null);
-  const phase = draft.phase;
-  const text = draft.text;
+  const busy = busyItems[detail.id];
+  const text = edits[detail.id] ?? draft.text;
+  const phase = busy === "respond" ? "posting" : busy === "regenerate" ? "regenerating" : draft.phase;
+  const p = PHASE[phase] ?? PHASE.ready;
+  const editable = !readOnly && !busy && draft.phase === "ready" && draft.canRespond;
 
   useEffect(() => {
     const el = textRef.current;
@@ -173,114 +181,157 @@ export function DraftCard({ draft, readOnly }: { draft: DraftState; readOnly?: b
     el.style.height = `${Math.min(el.scrollHeight + 2, 320)}px`;
   }, [text]);
 
-  const edited = text !== draft.original;
-  const busy = phase !== "ready";
-  const status =
-    phase === "regenerating" ? "재생성 중" : phase === "posted" ? "응답함" : phase === "posting" ? "보내는 중" : "승인 대기";
-  const where = draft.channel === "github" ? "이 이슈에 댓글로" : "이 대화로";
-  const lastRequest = draft.requests[draft.requests.length - 1];
+  const edited = text.trim() !== draft.text.trim();
+  const where = detail.source.kind === "github" ? "이 이슈에 댓글로" : "이 스레드로";
+  const who = detail.agent?.desk ?? detail.task?.name ?? "대응";
+  const hasText = !!draft.text || phase === "ready";
+  const retry = draft.phase === "publish_failed";
 
   return (
-    <section className="dc-card" aria-label={`결재 ${draft.approvalId} 답변 초안`} aria-busy={phase === "regenerating"}>
+    <section
+      className="dc-card"
+      aria-label={detail.approvalId != null ? `결재 ${detail.approvalId} 답변 초안` : "답변 초안"}
+      aria-busy={phase === "regenerating" || phase === "drafting"}
+    >
       <header className="dc-head">
         <div>
           <span className="dc-kicker">
-            결재 {draft.approvalId} · {draft.agent} 에이전트가 답변 초안을 올렸습니다
+            {detail.approvalId != null ? `결재 ${detail.approvalId} · ` : ""}
+            {who} 에이전트
+            {draft.phase === "drafting" || draft.phase === "stalled" ? "에게 요청이 들어왔습니다" : "가 답변 초안을 올렸습니다"}
           </span>
-          <h3>{phase === "posted" ? "이 답변으로 응답했습니다" : "이 초안으로 응답할까요?"}</h3>
+          <h3>{p.title}</h3>
         </div>
-        <span className="dc-grade" data-grade={draft.audience} title="결재 대상 등급">
-          {draft.audience}
+        <span className="dc-grade" data-grade={detail.gradeLabel} title="결재 대상 등급">
+          {detail.gradeLabel}
         </span>
-        <span className="dc-status" data-phase={phase}>
-          {(phase === "regenerating" || phase === "posting") && <span className="dc-spin" />}
-          {status}
+        <span className="dc-status" data-phase={p.tone}>
+          {(phase === "regenerating" || phase === "posting" || phase === "drafting") && <span className="dc-spin" />}
+          {p.status}
         </span>
       </header>
       <div className="dc-pipeline">
         <div className="dc-pipeline-head">
-          <span>뒷단에서 진행한 단계</span>
+          <span>뒷단에서 진행한 단계{detail.stepsRecorded ? "" : " · 기록된 단계만"}</span>
           {draft.round > 1 && <span className="dc-round">재생성 {draft.round - 1}회</span>}
         </div>
         <ol>
-          {draft.steps.map((s, i) => (
-            <Step
+          {detail.steps.map((s, i) => (
+            <StepRow
               key={s.key}
               step={s}
               index={i}
-              state="done"
               open={!!open[s.key]}
               onToggle={() => setOpen((o) => ({ ...o, [s.key]: !o[s.key] }))}
             />
           ))}
         </ol>
-        {lastRequest && (
+        {detail.blockedAttempts.length > 0 && (
+          <ul className="dc-details dc-blocked">
+            {detail.blockedAttempts.map((b, i) => (
+              <li key={i} data-tone="block">
+                <span>{b.action}</span>
+                <em>{b.reason}</em>
+              </li>
+            ))}
+          </ul>
+        )}
+        {draft.lastRequest && (
           <p className="dc-request">
             <b>재생성 요청</b>
-            <span>{lastRequest}</span>
+            <span>{draft.lastRequest}</span>
           </p>
         )}
       </div>
-      <div className="dc-draft">
-        <div className="dc-draft-head">
-          <label htmlFor={`dc-text-${draft.approvalId}`}>
-            답변 초안{" "}
-            <span>
-              {phase === "posted"
-                ? `${where} 보냈습니다`
-                : phase === "regenerating"
-                  ? "새 초안을 기다리는 중"
-                  : readOnly
-                    ? "게스트는 볼 수만 있어요"
-                    : "바로 고쳐 쓸 수 있어요"}
+      {detail.refusal && <p className="dc-note">담당 에이전트: {detail.refusal}</p>}
+      {hasText && (
+        <div className="dc-draft">
+          <div className="dc-draft-head">
+            <label htmlFor={`dc-text-${detail.id}`}>
+              답변 초안{" "}
+              <span>
+                {phase === "posted"
+                  ? `${where} 보냈습니다`
+                  : phase === "regenerating"
+                    ? "새 초안을 기다리는 중"
+                    : readOnly
+                      ? "게스트는 볼 수만 있어요"
+                      : editable
+                        ? "바로 고쳐 쓸 수 있어요"
+                        : ""}
+              </span>
+            </label>
+            <span className="dc-count">
+              {edited && phase !== "posted" && <b>수정함 · </b>}
+              {text.length}자 · {detail.gradeLabel}로 나감
             </span>
-          </label>
-          <span className="dc-count">
-            {edited && phase !== "posted" && <b>수정함 · </b>}
-            {text.length}자 · {draft.audience}로 나감
-          </span>
+          </div>
+          <textarea
+            id={`dc-text-${detail.id}`}
+            ref={textRef}
+            value={text}
+            onChange={(e) => setDraftText(detail.id, e.target.value)}
+            readOnly={!editable}
+            data-waiting={phase === "regenerating" || undefined}
+            rows={5}
+            spellCheck={false}
+          />
         </div>
-        <textarea
-          id={`dc-text-${draft.approvalId}`}
-          ref={textRef}
-          value={text}
-          onChange={(e) => setDraftText(draft.approvalId, e.target.value)}
-          readOnly={busy || readOnly}
-          data-waiting={phase === "regenerating" || undefined}
-          rows={5}
-          spellCheck={false}
-        />
-      </div>
+      )}
+      {draft.publishError && <p className="dc-note dc-note-error">게시 실패: {draft.publishError}</p>}
+      {itemErrors[detail.id] && (
+        <p className="dc-note dc-note-error" role="alert">
+          {itemErrors[detail.id]}
+        </p>
+      )}
       {phase === "posted" ? (
         <p className="dc-posted">
-          <Check /> 응답했습니다 · <span>{draft.postedUrl}</span>
+          <Check /> 응답했습니다 ·{" "}
+          {draft.postedUrl?.startsWith("http") ? (
+            <a href={draft.postedUrl} target="_blank" rel="noopener noreferrer">
+              <span>{draft.postedUrl}</span>
+            </a>
+          ) : (
+            <span>{draft.postedUrl}</span>
+          )}
         </p>
-      ) : (
+      ) : phase === "closed" || phase === "stalled" ? null : (
         <div className="dc-actions">
-          <button type="button" className="dc-btn" ref={regenBtn} onClick={() => setAsking(true)} disabled={busy || readOnly}>
-            <Regen />
-            재생성 요청
-          </button>
+          {draft.canRegenerate && (
+            <button
+              type="button"
+              className="dc-btn"
+              ref={regenBtn}
+              onClick={() => setAsking(true)}
+              disabled={readOnly || !!busy || phase !== "ready"}
+              title={`재생성 ${draft.regenerationsLeft}번 남음`}
+            >
+              <Regen />
+              재생성 요청
+            </button>
+          )}
           <button
             type="button"
             className="dc-btn dc-btn-primary"
-            onClick={() => postReply(draft.approvalId)}
-            disabled={busy || readOnly || !text.trim()}
+            onClick={() => respond(detail.id)}
+            disabled={readOnly || !!busy || !draft.canRespond || !text.trim()}
           >
             {phase === "posting" ? <span className="dc-spin dc-spin-light" /> : <Send />}
-            바로 응답
+            {retry ? "다시 게시" : "바로 응답"}
           </button>
         </div>
       )}
       {asking && (
         <RegenModal
+          left={draft.regenerationsLeft}
+          closes={draft.closesOnRegenerate}
           onCancel={() => {
             setAsking(false);
             regenBtn.current?.focus();
           }}
           onSubmit={(req) => {
             setAsking(false);
-            regenerateDraft(draft.approvalId, req);
+            regenerate(detail.id, req);
           }}
         />
       )}

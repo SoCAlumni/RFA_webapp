@@ -6,12 +6,12 @@ import { useApp, useData } from "@/store/app-store";
 import { AgentsPanel } from "./AgentsPanel";
 import { SandboxPanel } from "./SandboxPanel";
 
-/** 관리 팝업: 에이전트 · 샌드박스 */
+/** 관리 팝업: 에이전트 · 샌드박스. 조회는 누구나, 쓰기는 owner(서버도 403) */
 export function AdminModal() {
   const { admin, closeAdmin } = useApp();
-  const { session } = useData();
+  const { me } = useData();
   if (!admin.open) return null;
-  const guest = session.role !== "owner";
+  const guest = me.role !== "owner";
   const label = admin.tab === "sandbox" ? "샌드박스 관리" : "에이전트 관리";
   return (
     <Modal label={label} className="rfa-admin" onClose={closeAdmin} guest={guest}>

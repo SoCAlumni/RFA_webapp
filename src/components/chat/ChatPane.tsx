@@ -1,10 +1,11 @@
 "use client";
 
 import { AgentIcon } from "@/components/icons";
+import { Markdown } from "@/components/Markdown";
 import type {
   AgentStatus,
+  AgentView,
   AssistantTurn,
-  ChatAgent,
   ChatMessage,
   DelegateCall,
   RefLink,
@@ -45,11 +46,13 @@ const Lock = () => (
 );
 
 const ROLE_LABEL: Record<Role, string> = { owner: "소유자", guest: "게스트" };
-const GRADE_OF: Record<SandboxLevel, string> = { public: "사외", team: "사내", company: "사내" };
-const STATUS_LABEL: Record<AgentStatus, string> = {
+const GRADE_OF: Record<SandboxLevel, string> = { public: "사외", company: "사내" };
+const gradeOf = (level?: string) => GRADE_OF[level as SandboxLevel] ?? "사외";
+export const STATUS_LABEL: Record<AgentStatus, string> = {
   running: "실행 중",
   waiting_decision: "결정 대기",
   stopped: "꺼짐",
+  applying: "만드는 중",
 };
 
 const clock = (ts: number) => {
@@ -91,18 +94,19 @@ export function Avatar({
   size = "md",
   presence,
 }: {
-  agent?: ChatAgent;
+  agent?: AgentView;
   size?: "sm" | "md" | "lg";
   presence?: boolean;
 }) {
   const c = agent?.color ?? { bg: "#eceef2", fg: "#1a1d23" };
+  const text = agent?.icon === "generic" && agent.initials ? agent.initials : null;
   return (
     <span
       className={`cp-avatar ${size === "sm" ? "cp-avatar-sm" : size === "lg" ? "cp-avatar-lg" : ""} ${agent?.kind === "assistant" ? "cp-avatar-assistant" : ""}`}
-      style={{ background: c.bg, color: c.fg }}
+      style={{ background: c.bg, color: c.fg, ...(text && size === "sm" ? { fontSize: 9 } : {}) }}
       aria-hidden="true"
     >
-      <AgentIcon name={agent?.icon ?? "generic"} />
+      {text ?? <AgentIcon name={agent?.icon ?? "generic"} />}
       {presence && <span className="cp-presence" />}
     </span>
   );
@@ -140,7 +144,7 @@ function stepStates(t: AssistantTurn) {
   return s;
 }
 
-function traceHeadline(t: AssistantTurn, agents: Map<string, ChatAgent>) {
+function traceHeadline(t: AssistantTurn, agents: Map<string, AgentView>) {
   const n = t.calls.length;
   const waiting = t.calls.filter((c) => c.status === "running").length;
   if (t.status === "streaming")
@@ -212,7 +216,7 @@ function AgentRow({
   call,
   onRefClick,
 }: {
-  agent?: ChatAgent;
+  agent?: AgentView;
   agentId: string;
   reason?: string;
   score?: number;
@@ -292,7 +296,7 @@ function Trace({
   onRefClick,
 }: {
   turn: AssistantTurn;
-  agents: Map<string, ChatAgent>;
+  agents: Map<string, AgentView>;
   onRefClick?: (r: RefLink) => void;
 }) {
   const streaming = turn.status === "streaming";
@@ -310,7 +314,7 @@ function Trace({
     if (!people.some((p) => p.agentId === c.agentId)) people.push({ agentId: c.agentId });
   const guardLabel = turn.guard
     ? turn.guard.status === "running"
-      ? `${GRADE_OF[turn.guard.level]} 등급으로 검사 중`
+      ? `${gradeOf(turn.guard.level)} 등급으로 검사 중`
       : turn.guard.status === "pass"
         ? "통과"
         : turn.guard.status === "redacted"
@@ -393,13 +397,12 @@ function Turn({
   onRetry,
 }: {
   turn: AssistantTurn;
-  assistant: ChatAgent;
-  agents: Map<string, ChatAgent>;
+  assistant: AgentView;
+  agents: Map<string, AgentView>;
   onRefClick?: (r: RefLink) => void;
   onRetry?: () => void;
 }) {
   const streaming = turn.status === "streaming";
-  const paragraphs = turn.answer.split(/\n{2,}/);
   const refs = useMemo(() => {
     const m = new Map<string, RefLink>();
     for (const c of turn.calls) for (const r of c.refs) m.set(`${r.kind}:${r.id}`, r);
@@ -417,12 +420,7 @@ function Turn({
         {hasTrace && <Trace turn={turn} agents={agents} onRefClick={onRefClick} />}
         {(turn.answer || (streaming && turn.phase === "answer")) && (
           <div className="cp-answer" aria-live="polite">
-            {paragraphs.map((p, i) => (
-              <p key={i}>
-                {p}
-                {streaming && i === paragraphs.length - 1 && <span className="cp-caret" />}
-              </p>
-            ))}
+            <Markdown text={turn.answer} tail={streaming ? <span className="cp-caret" /> : null} />
           </div>
         )}
         {!streaming && refs.length > 0 && (
@@ -437,7 +435,7 @@ function Turn({
             {turn.status === "done" && (
               <>
                 <span>{seconds(turn.durationMs)}</span>
-                {turn.guard && <span>{GRADE_OF[turn.guard.level]} 등급 답변</span>}
+                {(turn.guard || turn.level) && <span>{gradeOf(turn.guard?.level ?? turn.level)} 등급 답변</span>}
                 {turn.guard?.status === "redacted" && <span>{turn.guard.note}</span>}
               </>
             )}
@@ -474,12 +472,15 @@ function Composer({
   onSend,
   onStop,
   note,
+  disabledReason,
 }: {
   assistantName: string;
   busy: boolean;
   onSend: (text: string) => void;
   onStop: () => void;
   note?: string;
+  /** 입력을 막는 까닭(만드는 중인 에이전트 등) */
+  disabledReason?: string;
 }) {
   const id = useId();
   const [text, setText] = useState("");
@@ -505,7 +506,7 @@ function Composer({
     return () => ro.disconnect();
   }, []);
   const submit = () => {
-    if (!text.trim() || busy) return;
+    if (!text.trim() || busy || disabledReason) return;
     onSend(text);
     setText("");
   };
@@ -521,7 +522,8 @@ function Composer({
             ref={ref}
             rows={1}
             value={text}
-            placeholder={`${assistantName}에게 물어보기`}
+            placeholder={disabledReason ?? `${assistantName}에게 물어보기`}
+            disabled={!!disabledReason}
             data-chat-input
             onChange={(e) => setText(e.target.value)}
             onKeyDown={(e) => {
@@ -559,7 +561,13 @@ function Composer({
                 중지
               </button>
             ) : (
-              <button type="button" className="cp-send" aria-label="보내기" disabled={!text.trim()} onClick={submit}>
+              <button
+                type="button"
+                className="cp-send"
+                aria-label="보내기"
+                disabled={!text.trim() || !!disabledReason}
+                onClick={submit}
+              >
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                   <path d="M4 4l17 8-17 8 3-8-3-8z" />
                 </svg>
@@ -576,8 +584,10 @@ function Composer({
 /* ---------- 대화창 ---------- */
 
 export interface ChatPaneProps {
-  assistant: ChatAgent;
-  agents: ChatAgent[];
+  assistant: AgentView;
+  agents: AgentView[];
+  /** 이 대화창의 대화 id */
+  conversationId: string;
   runQuery: RunQuery;
   initialMessages?: ChatMessage[];
   suggestions?: string[];
@@ -608,8 +618,13 @@ export function ChatPane(props: ChatPaneProps) {
     onRoleChange,
     focusAgentId,
     onMessagesChange,
+    conversationId,
   } = props;
-  const { messages, busy, send, stop, reset } = useChat(runQuery, initialMessages, role, focusAgentId);
+  const { messages, busy, send, stop, reset } = useChat(runQuery, initialMessages, {
+    role,
+    agentId: focusAgentId,
+    conversationId,
+  });
 
   useEffect(() => {
     onMessagesChange?.(messages);
@@ -618,7 +633,8 @@ export function ChatPane(props: ChatPaneProps) {
   const byId = useMemo(() => new Map(agents.map((a) => [a.id, a])), [agents]);
   const taskCount = agents.filter((a) => a.kind === "task").length;
   const focus = focusAgentId ? byId.get(focusAgentId) : undefined;
-  const picks = focus?.suggestions?.length ? focus.suggestions : suggestions;
+  const picks = focus ? (focus.suggestions ?? []) : suggestions;
+  const blocked = focus?.status === "applying" ? `${focus.name}는 아직 만드는 중입니다` : undefined;
 
   const scroller = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
@@ -702,7 +718,7 @@ export function ChatPane(props: ChatPaneProps) {
               {picks.length > 0 && (
                 <div className="cp-suggest">
                   {picks.map((s) => (
-                    <button key={s} type="button" onClick={() => send(s)}>
+                    <button key={s} type="button" disabled={!!blocked} onClick={() => send(s)}>
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                         <circle cx="11" cy="11" r="7" />
                         <line x1="16.5" y1="16.5" x2="21" y2="21" />
@@ -733,7 +749,14 @@ export function ChatPane(props: ChatPaneProps) {
           )}
         </div>
       </div>
-      <Composer assistantName={assistant.name} busy={busy} onSend={send} onStop={stop} note={disclosureNote} />
+      <Composer
+        assistantName={assistant.name}
+        busy={busy}
+        onSend={send}
+        onStop={stop}
+        note={disclosureNote}
+        disabledReason={blocked}
+      />
     </div>
   );
 }

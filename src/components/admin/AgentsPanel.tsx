@@ -1,34 +1,32 @@
 "use client";
 
-import { AgentIcon, IconLink, IconPlus, IconShieldSmall, IconStarFill } from "@/components/icons";
-import { Modal } from "@/components/Modal";
+import { AgentIcon, IconLink, IconPlus } from "@/components/icons";
 import { hasHangul } from "@/components/inbox/parts";
-import { ApiError } from "@/lib/api";
-import type { AdminAgent, AgentStatus } from "@/lib/api/types";
-import { useApp, useData } from "@/store/app-store";
-import { useState } from "react";
+import { Modal } from "@/components/Modal";
+import { errorText } from "@/lib/api";
+import type { AdminAgent, AdminAgentDetail, AdminStatus, PromptView } from "@/lib/api/types";
+import { dayTime, fmtNum } from "@/lib/format";
+import { useApp } from "@/store/app-store";
+import { useEffect, useState } from "react";
 import { SourcesPanel } from "./SourcesPanel";
 
-const fmt = (n: number) => n.toLocaleString("ko-KR");
-
-export const AGENT_STATUS: Record<AgentStatus, { label: string; tone: string }> = {
+export const ADMIN_STATUS: Record<AdminStatus, { label: string; tone: string }> = {
   running: { label: "실행 중", tone: "ok" },
-  waiting_decision: { label: "결정 대기", tone: "warn" },
   stopped: { label: "꺼짐", tone: "mute" },
+  applying: { label: "만드는 중", tone: "info" },
 };
 
-function Badge({ agent }: { agent: AdminAgent }) {
-  const icon = agent.badge.icon;
+function StatusPill({ status, observed }: { status: AdminStatus; observed: boolean }) {
+  const s = ADMIN_STATUS[status] ?? ADMIN_STATUS.stopped;
   return (
-    <div className="avatar-badge" style={{ background: agent.badge.bg }}>
-      {icon === "star-fill" ? (
-        <IconStarFill />
-      ) : icon === "shield" ? (
-        <IconShieldSmall />
-      ) : (
-        <AgentIcon name={icon} size={11} stroke={2.4} />
-      )}
-    </div>
+    <span
+      className="pill"
+      data-tone={s.tone}
+      data-unobserved={!observed || undefined}
+      title={observed ? undefined : "상태를 아직 확인하지 못해 선언된 값을 보여 줍니다"}
+    >
+      {s.label}
+    </span>
   );
 }
 
@@ -42,228 +40,471 @@ function AgentAvatar({ agent }: { agent: AdminAgent }) {
       >
         {agent.initials}
       </div>
-      <Badge agent={agent} />
+      <div className="avatar-badge" style={{ background: agent.color.fg }}>
+        <AgentIcon name={agent.icon} size={11} stroke={2.4} />
+      </div>
     </div>
   );
 }
 
-function SystemPromptDialog({ agent, onClose }: { agent: AdminAgent; onClose: () => void }) {
-  const { updateSystemPrompt } = useApp();
-  const [text, setText] = useState(agent.systemPrompt);
-  const [error, setError] = useState("");
-  const [saving, setSaving] = useState(false);
+function ConfirmDialog({
+  title,
+  text,
+  confirm,
+  onConfirm,
+  onClose,
+}: {
+  title: string;
+  text: string;
+  confirm: string;
+  onConfirm: () => void;
+  onClose: () => void;
+}) {
   return (
-    <Modal label="시스템 프롬프트 편집" className="rfa-dialog" onClose={onClose}>
-      <h2>시스템 프롬프트 편집</h2>
-      <p>
-        <b>{agent.short}</b> 에이전트가 매 대화 앞에 읽는 지시문입니다. 저장하면 다음 호출부터 적용됩니다.
-      </p>
-      <form
-        onSubmit={async (e) => {
-          e.preventDefault();
-          if (!text.trim()) return setError("비워 둘 수 없습니다.");
-          setSaving(true);
-          try {
-            await updateSystemPrompt(agent.id, text.trim());
+    <Modal label={title} className="rfa-dialog rfa-dialog-sm" onClose={onClose}>
+      <h2>{title}</h2>
+      <p>{text}</p>
+      <div className="rfa-actions">
+        <button type="button" className="rfa-btn" data-autofocus onClick={onClose}>
+          취소
+        </button>
+        <button
+          type="button"
+          className="rfa-btn rfa-btn-primary"
+          style={{ background: "#8a2410", borderColor: "#8a2410" }}
+          onClick={() => {
             onClose();
-          } catch (err) {
-            setError(err instanceof ApiError || err instanceof Error ? err.message : String(err));
-            setSaving(false);
-          }
-        }}
-      >
-        <label className="rfa-field">
-          <span>지시문</span>
-          <textarea
-            className="mono"
-            rows={8}
-            maxLength={4000}
-            value={text}
-            data-autofocus
-            onChange={(e) => {
-              setText(e.target.value);
-              setError("");
-            }}
-          />
-        </label>
-        {error && (
-          <p className="rfa-error" role="alert">
-            {error}
-          </p>
-        )}
-        <div className="rfa-actions">
-          <button type="button" className="rfa-btn" onClick={onClose}>
-            취소
-          </button>
-          <button type="submit" className="rfa-btn rfa-btn-primary" disabled={saving}>
-            {saving ? "저장하는 중" : "저장"}
-          </button>
-        </div>
-      </form>
+            onConfirm();
+          }}
+        >
+          {confirm}
+        </button>
+      </div>
     </Modal>
   );
 }
 
-function ContextCard({ agent, readOnly }: { agent: AdminAgent; readOnly: boolean }) {
-  const { compactContext, clearMemory } = useApp();
-  const [editing, setEditing] = useState(false);
-  const [busy, setBusy] = useState<"compact" | "clear" | null>(null);
+/** 시스템 프롬프트: IDENTITY · SKILL 은 읽기 전용, instructions 만 고친다 */
+function PromptDialog({ agent, canEdit, onClose }: { agent: AdminAgentDetail; canEdit: boolean; onClose: () => void }) {
+  const { api, notify, loadAdminAgent } = useApp();
+  const [view, setView] = useState<PromptView | null>(null);
+  const [text, setText] = useState("");
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    api.getPrompt(agent.id).then(
+      (p) => {
+        if (!alive) return;
+        setView(p);
+        setText(p.instructions);
+      },
+      (e) => {
+        if (alive) setError(errorText(e));
+      },
+    );
+    return () => {
+      alive = false;
+    };
+  }, [api, agent.id]);
+
+  const save = async () => {
+    setSaving(true);
+    setError("");
+    try {
+      const r = await api.setPrompt(agent.id, text);
+      notify(r.note || "다음 대화부터 적용됩니다");
+      loadAdminAgent(agent.id);
+      onClose();
+    } catch (e) {
+      setError(errorText(e));
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal label="시스템 프롬프트" className="rfa-dialog pd" onClose={onClose}>
+      <h2>시스템 프롬프트</h2>
+      <p>
+        <b>{agent.name}</b>가 매 대화 앞에 읽는 지시문입니다. IDENTITY · SKILL 은 읽기 전용이고, 덧붙일 지시만 고칠 수
+        있습니다. 저장하면 다음 대화부터 적용됩니다.
+      </p>
+      {!view && !error && (
+        <div className="loading" style={{ height: 120 }}>
+          <span className="spin" aria-hidden="true" />
+          불러오는 중
+        </div>
+      )}
+      {view && (
+        <div className="pd-body">
+          <details>
+            <summary>IDENTITY</summary>
+            <pre>{view.identity}</pre>
+          </details>
+          {view.skill && (
+            <details>
+              <summary>SKILL · {view.skill}</summary>
+              <pre>{view.skillText}</pre>
+            </details>
+          )}
+          <label className="rfa-field">
+            <span>
+              덧붙일 지시{" "}
+              <small className="rfa-hint">
+                {text.length} / 4000자
+                {view.instructionsUpdatedAt ? ` · 마지막 저장 ${dayTime(view.instructionsUpdatedAt)}` : ""}
+              </small>
+            </span>
+            <textarea
+              className="mono"
+              rows={7}
+              maxLength={4000}
+              value={text}
+              readOnly={!canEdit}
+              data-autofocus
+              placeholder={canEdit ? "예: 답변 끝에 근거 문서 이름을 붙인다." : "이 에이전트는 고칠 수 없습니다."}
+              onChange={(e) => {
+                setText(e.target.value);
+                setError("");
+              }}
+            />
+          </label>
+        </div>
+      )}
+      {error && (
+        <p className="rfa-error" role="alert">
+          {error}
+        </p>
+      )}
+      <div className="rfa-actions" style={{ marginTop: 14 }}>
+        <button type="button" className="rfa-btn" onClick={onClose}>
+          {canEdit ? "취소" : "닫기"}
+        </button>
+        {canEdit && (
+          <button
+            type="button"
+            className="rfa-btn rfa-btn-primary"
+            disabled={!view || saving || text === view.instructions}
+            onClick={save}
+          >
+            {saving && <span className="spin" aria-hidden="true" />}
+            {saving ? "적용하는 중" : "저장"}
+          </button>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+const PARTS = [
+  { key: "systemPrompt", label: "시스템 프롬프트", color: "#2a78d6" },
+  { key: "toolDefinitions", label: "도구 정의", color: "#eb6834" },
+  { key: "memoryNotes", label: "기억과 노트", color: "#1baf7a" },
+  { key: "conversation", label: "대화 기록", color: "#eda100" },
+] as const;
+
+function ContextCard({ agent }: { agent: AdminAgentDetail }) {
+  const { agentAction } = useApp();
+  const [busy, setBusy] = useState<"compact" | "clear-memory" | null>(null);
+  const [confirm, setConfirm] = useState(false);
+  const [prompt, setPrompt] = useState(false);
   const c = agent.context;
-  const used = c.system + c.tools + c.memory + c.history;
-  const parts = [
-    { key: "system", label: "시스템 프롬프트", value: c.system, color: "#2a78d6" },
-    { key: "tools", label: "도구 정의", value: c.tools, color: "#eb6834" },
-    { key: "memory", label: "기억과 노트", value: c.memory, color: "#1baf7a" },
-    { key: "history", label: "대화 기록", value: c.history, color: "#eda100" },
-  ];
-  const pct = (v: number) => `${((v / c.limit) * 100).toFixed(1)}%`;
-  const run = async (kind: "compact" | "clear") => {
-    setBusy(kind);
-    await (kind === "compact" ? compactContext(agent.id) : clearMemory(agent.id));
+  const run = async (action: "compact" | "clear-memory") => {
+    setBusy(action);
+    await agentAction(agent.id, action);
     setBusy(null);
   };
+  const pct = (v: number) => (c ? `${Math.min(100, (v / c.limitTokens) * 100).toFixed(1)}%` : "0%");
   return (
     <section className="adm-card" aria-label="컨텍스트">
       <div className="adm-card-head">
         <h3>컨텍스트</h3>
-        <span>압축 방식 safeguard · 최근 1턴 보존</span>
+        <span>
+          {c
+            ? `압축 방식 ${c.compaction ?? "safeguard"} · 최근 ${c.preserveRecentTurns ?? 1}턴 보존${c.measured ? " · 합계 실측" : " · 추정"}`
+            : "아직 LLM 호출 기록이 없습니다"}
+        </span>
       </div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        <div className="ctx-now">
-          <span>지금 쓰는 양</span>
-          <span>
-            <b>{fmt(used)}</b> / {fmt(c.limit)} 토큰
-          </span>
+      {c && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <div className="ctx-now">
+            <span>지금 쓰는 양{c.measuredAt ? ` · ${dayTime(c.measuredAt)} 기준` : ""}</span>
+            <span>
+              <b>{fmtNum(c.usedTokens)}</b> / {fmtNum(c.limitTokens)} 토큰
+            </span>
+          </div>
+          <div
+            className="ctx-bar"
+            role="img"
+            aria-label={`컨텍스트 ${fmtNum(c.limitTokens)} 토큰 중 ${fmtNum(c.usedTokens)} 토큰 사용. ${PARTS.map(
+              (p) => `${p.label} ${fmtNum(c.breakdown[p.key])}`,
+            ).join(", ")}`}
+          >
+            {PARTS.map((p) => (
+              <div
+                key={p.key}
+                title={`${p.label} · ${fmtNum(c.breakdown[p.key])} 토큰`}
+                style={{ width: pct(c.breakdown[p.key]), background: p.color }}
+              />
+            ))}
+            <div
+              title={`남은 공간 · ${fmtNum(Math.max(0, c.limitTokens - c.usedTokens))} 토큰`}
+              style={{ flexGrow: 1, background: "#e6e8ee" }}
+            />
+          </div>
+          <div className="ctx-legend">
+            {PARTS.map((p) => (
+              <div key={p.key}>
+                <i style={{ background: p.color }} />
+                <span>{p.label}</span>
+                <b>{fmtNum(c.breakdown[p.key])}</b>
+              </div>
+            ))}
+          </div>
         </div>
-        <div
-          className="ctx-bar"
-          role="img"
-          aria-label={`컨텍스트 ${fmt(c.limit)} 토큰 중 ${fmt(used)} 토큰 사용. ${parts
-            .map((p) => `${p.label} ${fmt(p.value)}`)
-            .join(", ")}`}
-        >
-          {parts.map((p) => (
-            <div key={p.key} title={`${p.label} · ${fmt(p.value)} 토큰`} style={{ width: pct(p.value), background: p.color }} />
-          ))}
-          <div title={`남은 공간 · ${fmt(c.limit - used)} 토큰`} style={{ flexGrow: 1, background: "#e6e8ee" }} />
-        </div>
-        <div className="ctx-legend">
-          {parts.map((p) => (
-            <div key={p.key}>
-              <i style={{ background: p.color }} />
-              <span>{p.label}</span>
-              <b>{fmt(p.value)}</b>
-            </div>
-          ))}
-        </div>
-      </div>
+      )}
       <div className="adm-actions">
-        <button type="button" className="adm-btn" disabled={readOnly || !!busy || c.history === 0} onClick={() => run("compact")}>
+        <button type="button" className="adm-btn" disabled={!agent.actions.compact || !!busy} onClick={() => run("compact")}>
           {busy === "compact" && <span className="spin" aria-hidden="true" />}
-          대화 압축
+          {busy === "compact" ? "압축하는 중" : "대화 압축"}
         </button>
         <button
           type="button"
           className="adm-btn"
           data-danger
-          disabled={readOnly || !!busy || c.memory === 0}
-          onClick={() => run("clear")}
+          disabled={!agent.actions.clearMemory || !!busy}
+          onClick={() => setConfirm(true)}
         >
-          {busy === "clear" && <span className="spin" aria-hidden="true" />}
-          기억 비우기
+          {busy === "clear-memory" && <span className="spin" aria-hidden="true" />}
+          {busy === "clear-memory" ? "비우는 중" : "기억 비우기"}
         </button>
         <div className="grow" />
-        <button type="button" className="adm-textlink" disabled={readOnly} onClick={() => setEditing(true)}>
-          시스템 프롬프트 편집
+        <button type="button" className="adm-textlink" data-keep onClick={() => setPrompt(true)}>
+          {agent.actions.editPrompt ? "시스템 프롬프트 편집" : "시스템 프롬프트 보기"}
         </button>
       </div>
-      {editing && <SystemPromptDialog agent={agent} onClose={() => setEditing(false)} />}
+      {confirm && (
+        <ConfirmDialog
+          title="기억을 비울까요?"
+          text={`${agent.name}의 세션과 MEMORY.md 를 지웁니다. 되돌릴 수 없습니다.`}
+          confirm="비우기"
+          onConfirm={() => run("clear-memory")}
+          onClose={() => setConfirm(false)}
+        />
+      )}
+      {prompt && <PromptDialog agent={agent} canEdit={agent.actions.editPrompt} onClose={() => setPrompt(false)} />}
     </section>
   );
 }
 
-function StatsCard({ agent, model }: { agent: AdminAgent; model: string }) {
+function LoadedSourcesCard({ agent }: { agent: AdminAgentDetail }) {
+  const { toggleLoadedSource } = useApp();
+  const [pending, setPending] = useState<string | null>(null);
+  if (!agent.sources.length) return null;
+  return (
+    <section className="adm-card" aria-label="불러오는 자료">
+      <div className="adm-card-head">
+        <h3>불러오는 자료</h3>
+        <span>답할 때 찾아보는 사내 지식</span>
+      </div>
+      <ul className="ls-list">
+        {agent.sources.map((s) => {
+          const disabled = !agent.actions.toggleSources || !s.available || !!pending;
+          return (
+            <li key={s.id}>
+              <div>
+                <b>{s.title}</b>
+                <span>{s.available ? s.description : (s.unavailableReason ?? "지금은 쓸 수 없습니다")}</span>
+              </div>
+              {pending === s.id && <span className="spin" aria-hidden="true" />}
+              <button
+                type="button"
+                role="switch"
+                className="ls-switch"
+                aria-checked={s.enabled}
+                aria-label={`${s.title} ${s.enabled ? "끄기" : "켜기"}`}
+                disabled={disabled}
+                onClick={async () => {
+                  setPending(s.id);
+                  await toggleLoadedSource(agent.id, s.id, !s.enabled);
+                  setPending(null);
+                }}
+              >
+                <i />
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
+function StatsCard({ agent }: { agent: AdminAgentDetail }) {
   const s = agent.stats;
-  const max = Math.max(40, ...s.week.map((d) => d.value));
-  const top = Math.ceil(max / 20) * 20;
+  const days = s.last7Days.slice(-7);
+  const max = Math.max(4, ...days.map((d) => d.calls));
+  const top = max <= 10 ? Math.ceil(max / 2) * 2 : Math.ceil(max / 20) * 20;
   const h = (v: number) => Math.round((v / top) * 108);
+  const last = days[days.length - 1]?.day;
+  const label = (day: string) => {
+    const [, m, d] = day.split("-");
+    return day === last ? "오늘" : `${Number(m)}/${Number(d)}`;
+  };
+  const cols = { gridTemplateColumns: `repeat(${Math.max(days.length, 1)}, minmax(0, 1fr))` };
   return (
     <section className="adm-card" aria-label="호출 통계">
       <div className="adm-card-head">
         <h3>호출 통계</h3>
-        <span>오늘 · LLM API Endpoints · {model}</span>
+        <span>
+          오늘 · {s.provider} · {s.model}
+        </span>
       </div>
       <div className="stat-grid">
         <div>
           <span>추론 호출</span>
           <b>
-            {s.calls}
+            {fmtNum(s.calls)}
             <small> 회</small>
           </b>
         </div>
         <div>
           <span>쓴 토큰</span>
           <b>
-            {s.tokensK}
+            {s.tokensThousands}
             <small> 천</small>
           </b>
         </div>
         <div>
           <span>평균 응답</span>
           <b>
-            {s.avgSec.toFixed(1)}
+            {s.avgLatencySeconds.toFixed(1)}
             <small> 초</small>
           </b>
         </div>
         <div>
           <span>차단된 호출</span>
           <b>
-            {s.blocked}
+            {s.blockedCalls}
             <small> 건</small>
           </b>
         </div>
       </div>
-      <div className="chart">
-        <div className="chart-title">최근 7일 추론 호출</div>
-        <div className="chart-grid">
-          <div className="chart-y">
-            <span style={{ top: -8 }}>{top}</span>
-            <span style={{ top: 49 }}>{top / 2}</span>
-            <span style={{ top: 106 }}>0</span>
-          </div>
-          <div
-            className="chart-plot"
-            role="img"
-            aria-label={`최근 7일 추론 호출. ${s.week.map((d) => `${d.date} ${d.value}회`).join(", ")}`}
-          >
-            <div className="chart-mid" />
-            <div className="chart-bars">
-              {s.week.map((d, i) => (
-                <div key={i} title={`${d.date} · ${d.value}회`} style={{ height: Math.max(h(d.value), d.value ? 2 : 0) }}>
-                  {i === s.week.length - 1 && <span>{d.value}</span>}
-                </div>
+      {days.length > 0 && (
+        <div className="chart">
+          <div className="chart-title">최근 7일 추론 호출</div>
+          <div className="chart-grid">
+            <div className="chart-y">
+              <span style={{ top: -8 }}>{top}</span>
+              <span style={{ top: 49 }}>{top / 2}</span>
+              <span style={{ top: 106 }}>0</span>
+            </div>
+            <div
+              className="chart-plot"
+              role="img"
+              aria-label={`최근 7일 추론 호출. ${days.map((d) => `${d.day} ${d.calls}회`).join(", ")}`}
+            >
+              <div className="chart-mid" />
+              <div className="chart-bars" style={cols}>
+                {days.map((d, i) => (
+                  <div key={d.day} title={`${d.day} · ${d.calls}회`} style={{ height: Math.max(h(d.calls), d.calls ? 2 : 0) }}>
+                    {i === days.length - 1 && <span>{d.calls}</span>}
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div />
+            <div className="chart-x" style={cols}>
+              {days.map((d) => (
+                <span key={d.day}>{label(d.day)}</span>
               ))}
             </div>
           </div>
-          <div />
-          <div className="chart-x">
-            {s.week.map((d, i) => (
-              <span key={i}>{d.label}</span>
-            ))}
-          </div>
         </div>
-      </div>
+      )}
     </section>
   );
 }
 
+function AgentDetailView({ id }: { id: string }) {
+  const { adminDetails, loadAdminAgent, openAdmin, adminList, data } = useApp();
+  const d = adminDetails[id];
+  const summary = adminList?.agents.find((a) => a.id === id);
+  useEffect(() => {
+    loadAdminAgent(id);
+  }, [id, loadAdminAgent]);
+  const head = d ?? summary;
+  if (!head)
+    return (
+      <div className="loading">
+        <span className="spin" aria-hidden="true" />
+        불러오는 중
+      </div>
+    );
+  const readOnly = data?.me.role !== "owner";
+  const taskIds = head.tasks?.map((t) => t.id) ?? [];
+  return (
+    <>
+      <div className="detail-bar">
+        <span>에이전트</span>
+        <span className="detail-bar-sep">/</span>
+        <span className="mono">{head.name}</span>
+        <div className="grow" />
+        {head.sandbox && (
+          <button type="button" className="link-btn" data-keep onClick={() => openAdmin("sandbox", head.sandbox!)}>
+            <IconLink />
+            <span>{head.sandbox} 샌드박스 설정 보기</span>
+          </button>
+        )}
+      </div>
+      <div className="adm-body">
+        <div className="adm-hero">
+          <div className="adm-hero-face" style={{ background: head.color.bg, color: head.color.fg }}>
+            {head.initials}
+          </div>
+          <div>
+            <h2>{head.name}</h2>
+            <span>{d?.description || head.subtitle}</span>
+          </div>
+          <StatusPill status={head.status} observed={head.observed} />
+        </div>
+        {!head.editable && head.readOnlyReason && <p className="adm-readonly">{head.readOnlyReason}</p>}
+        {taskIds.length ? (
+          taskIds.map((t) => <SourcesPanel key={`${id}:${t}`} taskId={t} readOnly={readOnly || !head.editable} />)
+        ) : (
+          <SourcesPanel key={id} />
+        )}
+        {d ? (
+          <>
+            <ContextCard agent={d} />
+            <LoadedSourcesCard agent={d} />
+            <StatsCard agent={d} />
+          </>
+        ) : (
+          <div className="loading" style={{ height: 160 }}>
+            <span className="spin" aria-hidden="true" />
+            상세를 불러오는 중
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
 export function AgentsPanel() {
-  const { adminAgents, sandboxes, session } = useData();
-  const { admin, selectAdminAgent, openAdmin, requestAddTask } = useApp();
-  const readOnly = session.role !== "owner";
-  const agent = adminAgents.find((a) => a.id === admin.agentId) ?? adminAgents[0];
-  const status = AGENT_STATUS[agent.status];
-  const model = sandboxes.find((s) => s.id === agent.sandbox)?.model ?? "qwen3.5:9b";
+  const { admin, adminList, selectAdminAgent, requestAddTask, clearAgentFilter } = useApp();
+  if (!adminList)
+    return (
+      <div className="loading">
+        <span className="spin" aria-hidden="true" />
+        에이전트를 불러오는 중
+      </div>
+    );
+  // 서버가 정렬해 준다(태스크 담당 → 팀 supervisor 와 멤버 → 나머지 → 관리). 다시 정렬하지 않는다
+  const all = adminList.agents;
+  const list = admin.filter ? all.filter((a) => admin.filter!.ids.includes(a.id)) : all;
+  const selected = all.find((a) => a.id === admin.agentId) ?? list[0];
 
   return (
     <div className="adm-grid">
@@ -271,72 +512,57 @@ export function AgentsPanel() {
         <div className="adm-list-head">
           <div>
             <h1>에이전트</h1>
-            <span>통합 관리자 하나와 태스크별 업무 에이전트</span>
+            <span>
+              태스크 {adminList.counts.task} · 관리 {adminList.counts.management}
+            </span>
           </div>
           <button type="button" className="adm-add" data-keep onClick={requestAddTask}>
             <IconPlus size={14} />
             <span>추가</span>
           </button>
         </div>
+        {admin.filter && (
+          <div className="adm-filter">
+            <span>{admin.filter.label}</span>
+            <button type="button" data-keep onClick={clearAgentFilter}>
+              모두 보기
+            </button>
+          </div>
+        )}
         <div>
-          {adminAgents.map((a) => {
-            const st = AGENT_STATUS[a.status];
+          {list.map((a, i) => {
+            const groupStart = i === 0 || list[i - 1].group !== a.group;
             return (
-              <button
-                key={a.id}
-                type="button"
-                data-keep
-                className="adm-row"
-                aria-current={a.id === agent.id}
-                onClick={() => selectAdminAgent(a.id)}
-              >
-                <AgentAvatar agent={a} />
-                <div className="adm-row-text">
-                  <b>{a.short}</b>
-                  <span>{a.subtitle}</span>
-                  <span>{a.sandbox} 샌드박스</span>
-                </div>
-                <div className="adm-row-side">
-                  <span className="pill" data-tone={st.tone}>
-                    {st.label}
-                  </span>
-                  <span>오늘 {a.callsToday}회</span>
-                </div>
-              </button>
+              <div key={a.id}>
+                {groupStart && (
+                  <div className="adm-group">{a.group === "management" ? "관리 에이전트" : "태스크 에이전트"}</div>
+                )}
+                <button
+                  type="button"
+                  data-keep
+                  className="adm-row"
+                  data-member={a.role === "member" || undefined}
+                  aria-current={a.id === selected?.id}
+                  onClick={() => selectAdminAgent(a.id)}
+                >
+                  <AgentAvatar agent={a} />
+                  <div className="adm-row-text">
+                    <b>{a.name}</b>
+                    <span>{a.subtitle}</span>
+                    <span>{a.sandboxLine}</span>
+                  </div>
+                  <div className="adm-row-side">
+                    <StatusPill status={a.status} observed={a.observed} />
+                    <span>오늘 {a.callsToday}회</span>
+                  </div>
+                </button>
+              </div>
             );
           })}
         </div>
+        {adminList.hint && <div className="adm-note">{adminList.hint}</div>}
       </section>
-      <main className="adm-main">
-        <div className="detail-bar">
-          <span>에이전트</span>
-          <span className="detail-bar-sep">/</span>
-          <span className="mono">{agent.short}</span>
-          <div className="grow" />
-          <button type="button" className="link-btn" data-keep onClick={() => openAdmin("sandbox", agent.sandbox)}>
-            <IconLink />
-            <span>{agent.sandbox} 샌드박스 설정 보기</span>
-          </button>
-        </div>
-        <div className="adm-body">
-          <div className="adm-hero">
-            <div className="adm-hero-face" style={{ background: agent.color.bg, color: agent.color.fg }}>
-              {agent.initials}
-            </div>
-            <div>
-              <h2>{agent.short}</h2>
-              <span>{agent.description}</span>
-            </div>
-            <span className="pill" data-tone={status.tone}>
-              {status.label}
-            </span>
-          </div>
-          <SourcesPanel key={agent.id} taskId={agent.taskId} readOnly={readOnly} />
-          <ContextCard agent={agent} readOnly={readOnly} />
-          <StatsCard agent={agent} model={model} />
-        </div>
-      </main>
+      <main className="adm-main">{selected ? <AgentDetailView id={selected.id} /> : null}</main>
     </div>
   );
 }
-

@@ -1,9 +1,8 @@
 "use client";
 
 import { Modal } from "@/components/Modal";
-import { ApiError } from "@/lib/api";
+import { ApiError, errorText } from "@/lib/api";
 import { useApp } from "@/store/app-store";
-import { useRouter } from "next/navigation";
 import { useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 
 function InfoDialog({ title, text, onClose }: { title: string; text: string; onClose: () => void }) {
@@ -21,8 +20,7 @@ function InfoDialog({ title, text, onClose }: { title: string; text: string; onC
 }
 
 function AddTaskDialog({ onClose }: { onClose: () => void }) {
-  const router = useRouter();
-  const { createTask, closeAdmin } = useApp();
+  const { createTask } = useApp();
   const [task, setTask] = useState("");
   const [agent, setAgent] = useState("");
   const [agentTouched, setAgentTouched] = useState(false);
@@ -59,32 +57,32 @@ function AddTaskDialog({ onClose }: { onClose: () => void }) {
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
+    if (saving) return;
     let allTags = tags;
     if (tagText.trim()) {
       allTags = addTags(tagText);
       setTagText("");
     }
-    const t = task.trim();
-    const a = agent.trim();
-    if (!t) {
+    const name = task.trim();
+    if (!name) {
       setError("태스크명을 적어 주세요.");
       taskRef.current?.focus();
       return;
     }
-    if (!a) {
-      setError("에이전트 이름을 적어 주세요.");
-      agentRef.current?.focus();
-      return;
-    }
     setSaving(true);
+    setError("");
     try {
-      const created = await createTask({ task: t, agent: a, description: desc, tags: allTags });
+      // 스트림이 시작되면 이 대화상자를 닫고 진행 화면을 보여 준다
+      await createTask({
+        name,
+        agentName: agent.trim() || null,
+        description: desc.trim() || null,
+        tags: allTags,
+      });
       onClose();
-      closeAdmin();
-      router.push(`/chat/${created.task.id}`);
     } catch (err) {
-      setError(err instanceof ApiError || err instanceof Error ? err.message : String(err));
-      agentRef.current?.focus();
+      setError(errorText(err));
+      if (err instanceof ApiError && err.code === "name_conflict") taskRef.current?.focus();
       setSaving(false);
     }
   };
@@ -108,6 +106,7 @@ function AddTaskDialog({ onClose }: { onClose: () => void }) {
             value={task}
             onChange={(e) => {
               setTask(e.target.value);
+              setError("");
               if (!agentTouched) setAgent(e.target.value.trim() ? `${e.target.value.trim()} 대응 에이전트` : "");
             }}
           />
@@ -117,7 +116,6 @@ function AddTaskDialog({ onClose }: { onClose: () => void }) {
           <input
             ref={agentRef}
             name="agent"
-            required
             maxLength={40}
             placeholder="예: Jira 이슈 대응 에이전트"
             value={agent}
@@ -159,8 +157,10 @@ function AddTaskDialog({ onClose }: { onClose: () => void }) {
             <input
               id="rfa-tag-input"
               ref={tagRef}
-              placeholder="입력 후 Enter"
+              placeholder={tags.length >= 8 ? "태그는 8개까지" : "입력 후 Enter"}
+              disabled={tags.length >= 8}
               value={tagText}
+              maxLength={30}
               onChange={(e) => setTagText(e.target.value)}
               onKeyDown={onTagKey}
             />
@@ -177,7 +177,8 @@ function AddTaskDialog({ onClose }: { onClose: () => void }) {
             취소
           </button>
           <button type="submit" className="rfa-btn rfa-btn-primary" disabled={saving}>
-            {saving ? "만드는 중" : "만들기"}
+            {saving && <span className="spin" aria-hidden="true" />}
+            {saving ? "요청하는 중" : "만들기"}
           </button>
         </div>
       </form>
@@ -186,7 +187,7 @@ function AddTaskDialog({ onClose }: { onClose: () => void }) {
 }
 
 export function Dialogs() {
-  const { dialog, setDialog } = useApp();
+  const { dialog, setDialog, sandboxList } = useApp();
   const close = () => setDialog(null);
   if (dialog === "addTask") return <AddTaskDialog onClose={close} />;
   if (dialog === "ownerOnly")
@@ -197,11 +198,11 @@ export function Dialogs() {
         onClose={close}
       />
     );
-  if (dialog === "addSandbox")
+  if (dialog === "sandboxLimit")
     return (
       <InfoDialog
         title="샌드박스 추가"
-        text="샌드박스는 많은 양의 메모리를 요구합니다. 현재 데모에서는 2개까지만 제공드립니다."
+        text={sandboxList?.limitMessage || "지금은 샌드박스를 더 추가할 수 없습니다."}
         onClose={close}
       />
     );

@@ -1,7 +1,8 @@
 "use client";
 
-import { ApiError } from "@/lib/api";
-import type { Grade, SourceKind } from "@/lib/api/types";
+import { errorText } from "@/lib/api";
+import type { SandboxLevel, SourceKind } from "@/lib/api/types";
+import { dayTime } from "@/lib/format";
 import { useApp } from "@/store/app-store";
 import { useEffect, useState } from "react";
 
@@ -30,25 +31,28 @@ const SCOPES: Record<SourceKind, string[]> = {
   github: ["이슈", "PR 코멘트", "Discussions"],
   slack: ["멘션", "모든 메시지", "DM"],
 };
+const GRADE_LABEL: Record<SandboxLevel, string> = { public: "사외", company: "사내" };
 
 function AddSourceForm({ taskId, onDone }: { taskId: string; onDone: () => void }) {
   const { addSource } = useApp();
   const [kind, setKind] = useState<SourceKind>("github");
   const [target, setTarget] = useState("");
   const [scopes, setScopes] = useState<string[]>(["이슈"]);
-  const [grade, setGrade] = useState<Grade>("사외");
+  const [grade, setGrade] = useState<SandboxLevel>("public");
   const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
 
   const changeKind = (k: SourceKind) => {
     setKind(k);
     setScopes(k === "github" ? ["이슈"] : ["멘션"]);
-    setGrade(k === "github" ? "사외" : "사내");
+    setGrade(k === "github" ? "public" : "company");
     setTarget("");
     setError("");
   };
 
   const submit = async () => {
     const t = target.trim();
+    // 서버와 같은 규칙으로 먼저 막는다(문구는 시안 그대로)
     const ok = kind === "github" ? /^[\w.-]+\/[\w.-]+$/.test(t) : /^(#[\w가-힣.-]+|DM · .+)$/.test(t);
     if (!ok) {
       setError(
@@ -62,11 +66,13 @@ function AddSourceForm({ taskId, onDone }: { taskId: string; onDone: () => void 
       setError("받을 범위를 하나 이상 골라 주세요.");
       return;
     }
+    setSaving(true);
     try {
       await addSource(taskId, { kind, target: t, scopes, grade });
       onDone();
     } catch (e) {
-      setError(e instanceof ApiError || e instanceof Error ? e.message : String(e));
+      setError(errorText(e));
+      setSaving(false);
     }
   };
 
@@ -85,6 +91,7 @@ function AddSourceForm({ taskId, onDone }: { taskId: string; onDone: () => void 
         <input
           value={target}
           autoFocus
+          maxLength={200}
           onChange={(e) => {
             setTarget(e.target.value);
             setError("");
@@ -92,7 +99,7 @@ function AddSourceForm({ taskId, onDone }: { taskId: string; onDone: () => void 
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.nativeEvent.isComposing) submit();
           }}
-          placeholder={kind === "github" ? "owner/repo  예: team/ondevice-llm" : "#채널이름  또는  DM · 팀이름"}
+          placeholder={kind === "github" ? "owner/repo  예: team/ondevice-llm" : "#C0123ABC  또는  DM · 팀이름"}
         />
       </label>
       <div className="sp-field">
@@ -113,10 +120,17 @@ function AddSourceForm({ taskId, onDone }: { taskId: string; onDone: () => void 
       <div className="sp-field">
         <span>들어오는 결재 대상의 기본 등급</span>
         <div className="sp-seg sp-seg-sm" role="radiogroup" aria-label="기본 등급">
-          {(["사외", "사내"] as const).map((g) => (
-            <button key={g} type="button" role="radio" aria-checked={grade === g} data-grade={g} onClick={() => setGrade(g)}>
-              {g}
-              {kind === "github" ? (g === "사외" ? " · 공개 저장소" : " · 비공개 저장소") : ""}
+          {(["public", "company"] as const).map((g) => (
+            <button
+              key={g}
+              type="button"
+              role="radio"
+              aria-checked={grade === g}
+              data-grade={GRADE_LABEL[g]}
+              onClick={() => setGrade(g)}
+            >
+              {GRADE_LABEL[g]}
+              {kind === "github" ? (g === "public" ? " · 공개 저장소" : " · 비공개 저장소") : ""}
             </button>
           ))}
         </div>
@@ -130,15 +144,15 @@ function AddSourceForm({ taskId, onDone }: { taskId: string; onDone: () => void 
         <button type="button" className="sp-btn" onClick={onDone}>
           취소
         </button>
-        <button type="button" className="sp-btn sp-btn-primary" onClick={submit}>
-          연결
+        <button type="button" className="sp-btn sp-btn-primary" onClick={submit} disabled={saving}>
+          {saving ? "연결하는 중" : "연결"}
         </button>
       </div>
     </div>
   );
 }
 
-/** 태스크 에이전트에 문의가 들어오는 곳(GitHub · Slack) */
+/** 태스크 에이전트에 문의가 들어오는 곳(GitHub · Slack) — GET/POST/DELETE /tasks/{id}/sources */
 export function SourcesPanel({ taskId, readOnly }: { taskId?: string; readOnly?: boolean }) {
   const { sources, loadSources, removeSource } = useApp();
   const [adding, setAdding] = useState(false);
@@ -189,21 +203,16 @@ export function SourcesPanel({ taskId, readOnly }: { taskId?: string; readOnly?:
               <span className="sp-main">
                 <b>{s.target}</b>
                 <span>
-                  {s.kind === "github" ? "GitHub" : "Slack"} · {s.scopes.join(" · ")}
+                  {s.kindLabel} · {s.scopes.join(" · ")}
+                  {s.requestCount ? ` · 요청 ${s.requestCount}건` : ""}
+                  {s.lastRequestAt ? ` · 최근 ${dayTime(s.lastRequestAt)}` : ""}
                 </span>
               </span>
-              <span className="sp-grade" data-grade={s.grade}>
-                {s.grade}
+              <span className="sp-grade" data-grade={s.gradeLabel}>
+                {s.gradeLabel}
               </span>
               <span className="sp-state" data-status={s.status}>
-                {s.status === "connecting" ? (
-                  <>
-                    <i className="sp-spin" />
-                    연결 중
-                  </>
-                ) : (
-                  "연결됨"
-                )}
+                연결됨
               </span>
               {!readOnly && (
                 <button

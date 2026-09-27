@@ -1,18 +1,10 @@
 "use client";
 
 import { ICON_PATHS } from "@/components/icons";
-import type { AgentStatus, ChatAgent, ChatMessage, ChatSeed } from "@/lib/api/types";
+import { fromServerMessages, newConversationId } from "@/lib/chat/reducer";
+import type { AgentView, ChatMessage, ConversationDetail, ConversationSummary } from "@/lib/api/types";
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
-import { ChatPane, type ChatPaneProps } from "./ChatPane";
-
-let seq = 0;
-const sessionId = () => `s${Date.now().toString(36)}${(seq++).toString(36)}`;
-
-const STATUS_LABEL: Record<AgentStatus, string> = {
-  running: "실행 중",
-  waiting_decision: "결정 대기",
-  stopped: "꺼짐",
-};
+import { ChatPane, STATUS_LABEL, type ChatPaneProps } from "./ChatPane";
 
 function when(ts: number) {
   const d = new Date(ts);
@@ -30,6 +22,7 @@ function when(ts: number) {
 interface Summary {
   title: string;
   preview: string;
+  /** 밀리초 */
   updatedAt: number;
   busy: boolean;
   count: number;
@@ -53,6 +46,14 @@ function summarize(messages: ChatMessage[], createdAt: number): Summary {
   };
 }
 
+const fromServerSummary = (c: ConversationSummary): Summary => ({
+  title: c.title || "새 대화",
+  preview: c.busy ? "답변 중…" : c.preview,
+  updatedAt: c.updatedAt * 1000,
+  busy: c.busy,
+  count: c.count,
+});
+
 const svg = {
   collapse: (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -75,25 +76,32 @@ const svg = {
   ),
 };
 
-function Face({ agent, size, busy }: { agent: ChatAgent; size: "xs" | "sm" | "md" | "lg"; busy?: boolean }) {
+function Face({ agent, size, busy }: { agent: AgentView; size: "xs" | "sm" | "md" | "lg"; busy?: boolean }) {
   const c = agent.color ?? { bg: "#eceef2", fg: "#1a1d23" };
+  const text = agent.icon === "generic" && agent.initials ? agent.initials : null;
   return (
     <span
       className={`cw-face cw-face-${size} ${agent.kind === "assistant" ? "cw-face-assistant" : ""}`}
-      style={{ background: c.bg, color: c.fg }}
+      style={{
+        background: c.bg,
+        color: c.fg,
+        ...(text ? { fontSize: size === "xs" ? 8 : size === "sm" ? 10 : 12, fontWeight: 700, letterSpacing: "-0.03em" } : {}),
+      }}
       aria-hidden="true"
     >
-      <svg
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        aria-hidden="true"
-        dangerouslySetInnerHTML={{ __html: ICON_PATHS[agent.icon ?? "generic"] ?? ICON_PATHS.generic }}
-      />
-      {size === "xs" ? null : busy ? (
+      {text ?? (
+        <svg
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
+          dangerouslySetInnerHTML={{ __html: ICON_PATHS[agent.icon ?? "generic"] ?? ICON_PATHS.generic }}
+        />
+      )}
+      {size === "xs" ? null : busy || agent.status === "applying" ? (
         <span className="cw-busy" />
       ) : (
         agent.status !== "stopped" && <span className="cw-dot" />
@@ -103,24 +111,34 @@ function Face({ agent, size, busy }: { agent: ChatAgent; size: "xs" | "sm" | "md
 }
 
 interface Session {
+  /** 서버 대화 id. 새 대화는 브라우저가 만들고 소유자라면 첫 질문 때 서버가 저장한다 */
   id: string;
   agentId: string;
+  /** 밀리초 */
   createdAt: number;
+  /** 서버에 저장된 대화(아직 안 불러왔을 수 있다) */
+  remote?: boolean;
+  /** 대화창에 그릴 메시지가 준비됐는지 */
+  loaded: boolean;
   seed?: ChatMessage[];
 }
 
 export interface ChatWorkspaceProps
-  extends Omit<ChatPaneProps, "focusAgentId" | "initialMessages" | "onMessagesChange" | "onNewChat"> {
+  extends Omit<
+    ChatPaneProps,
+    "focusAgentId" | "initialMessages" | "onMessagesChange" | "onNewChat" | "conversationId"
+  > {
   selectedAgentId?: string;
   onSelectAgent?: (agentId: string) => void;
-  seed?: ChatSeed[];
+  /** 소유자의 저장된 대화 목록(게스트는 빈 배열) */
+  remote?: ConversationSummary[];
+  loadConversation?: (id: string) => Promise<ConversationDetail>;
 }
 
-/** 대화 상대 목록(왼쪽) + 상대별 대화 내역 + 대화창 */
 interface WorkspaceState {
   sessions: Session[];
   summaries: Record<string, Summary>;
-  /** 담당자별로 지금 열어 둔 대화 */
+  /** 담당자별로 마지막으로 연 대화 */
   current: Record<string, string>;
   active: string;
   /** 한 번이라도 연 대화(열린 채로 두어 답변이 이어지게) */
@@ -131,36 +149,40 @@ type Action =
   | { type: "select"; agentId: string; fallbackId: string }
   | { type: "new"; agentId: string; id: string; at: number }
   | { type: "open"; id: string }
-  | { type: "summary"; id: string; summary: Summary };
+  | { type: "summary"; id: string; summary: Summary }
+  | { type: "remote"; list: ConversationSummary[] }
+  | { type: "loaded"; id: string; messages: ChatMessage[]; summary?: Summary };
 
 const mount = (list: string[], id: string) => (list.includes(id) ? list : [...list, id]);
 
+const isEmptyLocal = (st: WorkspaceState, id?: string) => {
+  const s = id ? st.sessions.find((x) => x.id === id) : undefined;
+  return !!s && !s.remote && (st.summaries[s.id]?.count ?? 0) === 0;
+};
+
+/** 가장 최근 대화(질문이 있는 것 먼저) */
 function latestSession(st: WorkspaceState, agentId: string) {
+  const time = (s: Session) => st.summaries[s.id]?.updatedAt ?? s.createdAt;
   return st.sessions
     .filter((s) => s.agentId === agentId)
-    .sort(
-      (a, b) =>
-        (st.summaries[b.id]?.updatedAt ?? b.createdAt) - (st.summaries[a.id]?.updatedAt ?? a.createdAt),
-    )[0];
+    .sort((a, b) => {
+      const used = Number((st.summaries[b.id]?.count ?? 0) > 0) - Number((st.summaries[a.id]?.count ?? 0) > 0);
+      return used || time(b) - time(a);
+    })[0];
 }
 
-/** 담당자를 고르면 그 담당자의 최근 대화(없으면 새 대화)를 연다 */
+/** 담당자를 고르면: 마지막으로 연 대화 → 가장 최근 대화 → 없으면 새 대화(FE_API_GUIDE §2.1) */
 function focusAgent(st: WorkspaceState, agentId: string, fallbackId: string): WorkspaceState {
   const cur = st.current[agentId];
   if (cur && st.sessions.some((s) => s.id === cur))
     return { ...st, active: agentId, mounted: mount(st.mounted, cur) };
   const latest = latestSession(st, agentId);
   if (latest)
-    return {
-      ...st,
-      active: agentId,
-      current: { ...st.current, [agentId]: latest.id },
-      mounted: mount(st.mounted, latest.id),
-    };
+    return { ...st, active: agentId, current: { ...st.current, [agentId]: latest.id }, mounted: mount(st.mounted, latest.id) };
   return {
     ...st,
     active: agentId,
-    sessions: [...st.sessions, { id: fallbackId, agentId, createdAt: Date.now() }],
+    sessions: [...st.sessions, { id: fallbackId, agentId, createdAt: Date.now(), loaded: true }],
     current: { ...st.current, [agentId]: fallbackId },
     mounted: mount(st.mounted, fallbackId),
   };
@@ -170,17 +192,52 @@ function reducer(st: WorkspaceState, a: Action): WorkspaceState {
   switch (a.type) {
     case "select":
       return focusAgent(st, a.agentId, a.fallbackId);
-    case "new":
+    case "new": {
+      // 아직 아무것도 묻지 않은 새 대화가 열려 있으면 그대로 쓴다
+      if (isEmptyLocal(st, st.current[a.agentId])) return st;
       return {
         ...st,
-        sessions: [...st.sessions, { id: a.id, agentId: a.agentId, createdAt: a.at }],
+        sessions: [...st.sessions, { id: a.id, agentId: a.agentId, createdAt: a.at, loaded: true }],
         current: { ...st.current, [a.agentId]: a.id },
         mounted: mount(st.mounted, a.id),
       };
+    }
     case "open":
       return { ...st, current: { ...st.current, [st.active]: a.id }, mounted: mount(st.mounted, a.id) };
     case "summary":
       return { ...st, summaries: { ...st.summaries, [a.id]: a.summary } };
+    case "remote": {
+      const known = new Set(st.sessions.map((s) => s.id));
+      const added = a.list
+        .filter((c) => !known.has(c.id))
+        .map((c): Session => ({ id: c.id, agentId: c.agentId, createdAt: c.createdAt * 1000, remote: true, loaded: false }));
+      const summaries = { ...st.summaries };
+      for (const c of a.list) {
+        const local = summaries[c.id];
+        // 이 브라우저에서 답변 중인 대화는 화면 쪽 요약이 더 새롭다
+        if (!local?.busy) summaries[c.id] = fromServerSummary(c);
+      }
+      let next: WorkspaceState = { ...st, sessions: [...st.sessions, ...added], summaries };
+      // 처음 목록이 오기 전에 연 빈 새 대화는 가장 최근 저장 대화로 바꾼다
+      for (const [agentId, id] of Object.entries(st.current)) {
+        if (!isEmptyLocal(next, id)) continue;
+        const latest = latestSession({ ...next, current: {} }, agentId);
+        if (latest?.remote) {
+          next = {
+            ...next,
+            current: { ...next.current, [agentId]: latest.id },
+            mounted: agentId === next.active ? mount(next.mounted, latest.id) : next.mounted,
+          };
+        }
+      }
+      return next;
+    }
+    case "loaded":
+      return {
+        ...st,
+        sessions: st.sessions.map((s) => (s.id === a.id ? { ...s, loaded: true, seed: a.messages } : s)),
+        summaries: a.summary ? { ...st.summaries, [a.id]: a.summary } : st.summaries,
+      };
   }
 }
 
@@ -188,45 +245,85 @@ function SessionPane({
   session,
   dispatch,
   ...pane
-}: Omit<ChatPaneProps, "onMessagesChange" | "onNewChat" | "initialMessages"> & {
+}: Omit<ChatPaneProps, "onMessagesChange" | "onNewChat" | "initialMessages" | "conversationId"> & {
   session: Session;
   dispatch: (a: Action) => void;
 }) {
   const { id, createdAt, agentId } = session;
   const onMessagesChange = useCallback(
-    (m: ChatMessage[]) => dispatch({ type: "summary", id, summary: summarize(m, createdAt) }),
+    (m: ChatMessage[]) => {
+      if (m.length) dispatch({ type: "summary", id, summary: summarize(m, createdAt) });
+    },
     [dispatch, id, createdAt],
   );
   return (
     <ChatPane
       {...pane}
+      conversationId={id}
       initialMessages={session.seed}
       onMessagesChange={onMessagesChange}
-      onNewChat={() => dispatch({ type: "new", agentId, id: sessionId(), at: Date.now() })}
+      onNewChat={() => dispatch({ type: "new", agentId, id: newConversationId(), at: Date.now() })}
     />
   );
 }
 
+/** 대화 상대 목록(왼쪽) + 상대별 대화 내역 + 대화창 */
 export function ChatWorkspace(props: ChatWorkspaceProps) {
-  const { assistant, agents, selectedAgentId, onSelectAgent, seed = [], ...paneProps } = props;
+  const {
+    assistant,
+    agents,
+    selectedAgentId,
+    onSelectAgent,
+    remote,
+    loadConversation,
+    ...paneProps
+  } = props;
 
   const people = useMemo(() => [assistant, ...agents.filter((a) => a.kind === "task")], [assistant, agents]);
   const byId = useMemo(() => new Map(people.map((a) => [a.id, a])), [people]);
 
-  // 지난 대화와 그 요약으로 시작한다
   const [st, dispatch] = useReducer(reducer, null, () => {
-    const sessions: Session[] = seed.map((s) => ({
-      id: sessionId(),
-      agentId: s.agentId,
-      createdAt: s.at,
-      seed: s.messages,
-    }));
-    const summaries: Record<string, Summary> = {};
-    for (const s of sessions) if (s.seed) summaries[s.id] = summarize(s.seed, s.createdAt);
     const active = selectedAgentId && byId.has(selectedAgentId) ? selectedAgentId : assistant.id;
-    return focusAgent({ sessions, summaries, current: {}, active, mounted: [] }, active, sessionId());
+    return focusAgent({ sessions: [], summaries: {}, current: {}, active, mounted: [] }, active, newConversationId());
   });
   const { sessions, summaries, current, active, mounted } = st;
+
+  // 서버의 저장된 대화 목록이 오면 합친다
+  useEffect(() => {
+    if (remote) dispatch({ type: "remote", list: remote });
+  }, [remote]);
+
+  // 연 대화가 서버 대화면 메시지를 불러온다. 다른 곳에서 답변 중이면 끝날 때까지 기다렸다 다시 부른다
+  const currentId = current[active];
+  const currentSession = sessions.find((s) => s.id === currentId);
+  const [waiting, setWaiting] = useState<string | null>(null);
+  useEffect(() => {
+    if (!currentSession || currentSession.loaded || !loadConversation) return;
+    let alive = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const fetchOnce = () =>
+      loadConversation(currentSession.id).then(
+        (d) => {
+          if (!alive) return;
+          if (d.busy) {
+            setWaiting(d.id);
+            timer = setTimeout(fetchOnce, 4000);
+            return;
+          }
+          setWaiting(null);
+          const messages = fromServerMessages(d.messages);
+          dispatch({ type: "loaded", id: d.id, messages, summary: fromServerSummary(d) });
+        },
+        () => {
+          if (alive) dispatch({ type: "loaded", id: currentSession.id, messages: [] });
+        },
+      );
+    fetchOnce();
+    return () => {
+      alive = false;
+      if (timer) clearTimeout(timer);
+    };
+  }, [currentSession, loadConversation]);
 
   const [collapsed, setCollapsed] = useState(false);
   const [narrow, setNarrow] = useState(false);
@@ -249,7 +346,7 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
 
   const select = (agentId: string, notify = true) => {
     if (!byId.has(agentId)) return;
-    dispatch({ type: "select", agentId, fallbackId: sessionId() });
+    dispatch({ type: "select", agentId, fallbackId: newConversationId() });
     if (narrow) setCollapsed(true);
     if (notify) onSelectAgent?.(agentId);
   };
@@ -268,7 +365,8 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
       .filter((s) => s.agentId === agentId)
       .sort((a, b) => (summaries[b.id]?.updatedAt ?? b.createdAt) - (summaries[a.id]?.updatedAt ?? a.createdAt));
 
-  const newSession = (agentId: string) => dispatch({ type: "new", agentId, id: sessionId(), at: Date.now() });
+  const newSession = (agentId: string) =>
+    dispatch({ type: "new", agentId, id: newConversationId(), at: Date.now() });
 
   const openSession = (id: string) => {
     dispatch({ type: "open", id });
@@ -283,7 +381,7 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
     return s ? summaries[s.id] : undefined;
   };
   const isBusy = (agentId: string) => sessions.some((s) => s.agentId === agentId && summaries[s.id]?.busy);
-  const subtitleOf = (a: ChatAgent) =>
+  const subtitleOf = (a: AgentView) =>
     a.kind === "assistant"
       ? `담당자 ${agents.filter((x) => x.kind === "task").length}명을 관장`
       : [a.status && STATUS_LABEL[a.status], a.taskName].filter(Boolean).join(" · ");
@@ -512,7 +610,7 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
       )}
       <div className="cw-main">
         {sessions
-          .filter((s) => mounted.includes(s.id))
+          .filter((s) => mounted.includes(s.id) && s.loaded)
           .map((s) => (
             <div key={s.id} className="cw-pane" hidden={!(s.agentId === active && s.id === current[active])}>
               <SessionPane
@@ -525,6 +623,14 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
               />
             </div>
           ))}
+        {currentSession && !currentSession.loaded && (
+          <div className="cw-pane">
+            <div className="loading">
+              <span className="spin" aria-hidden="true" />
+              {waiting === currentSession.id ? "다른 곳에서 답변 중입니다. 끝나면 불러옵니다" : "대화를 불러오는 중"}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

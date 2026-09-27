@@ -10,49 +10,79 @@ import {
   IconSend,
   IconWarn,
 } from "@/components/icons";
-import type { ApprovalDetail, DraftState, GithubSourceView, SlackSourceView } from "@/lib/api/types";
-import { useApp } from "@/store/app-store";
+import { Markdown } from "@/components/Markdown";
+import type { GithubSource, InboxDetail, SlackSource, ThreadMessage } from "@/lib/api/types";
+import { ago, clock, dayTime, initialsOf } from "@/lib/format";
+import { useData } from "@/store/app-store";
 import Link from "next/link";
 import { DraftCard } from "./DraftCard";
-import { CHANNEL_COLOR, RequesterAvatar, StatePill } from "./parts";
+import { chatHref } from "./InboxList";
+import { BadgePill, RequesterAvatar, channelColor, hasHangul } from "./parts";
 
-function GithubSource({
-  src,
-  title,
-  initials,
-  agentShort,
-  posted,
+/** 결재 전 · 후 에이전트 자리 문구 */
+function slotText(d: InboxDetail, desk: string, where: "comment" | "reply") {
+  const phase = d.draft.phase;
+  if (phase === "posted") return null;
+  if (phase === "closed") return `${desk} 에이전트는 이 요청에 응답하지 않기로 했습니다.`;
+  return where === "comment"
+    ? `${desk} 에이전트의 댓글은 결재가 끝나면 이 자리에 등록됩니다.`
+    : `${desk} 에이전트의 답장은 결재가 끝나면 이 스레드로 전송됩니다.`;
+}
+
+function Comment({
+  msg,
+  marks,
+  color,
 }: {
-  src: GithubSourceView;
-  title: string;
-  initials: string;
-  agentShort: string;
-  posted?: string;
+  msg: ThreadMessage;
+  marks: string[];
+  color: { bg: string; fg: string };
 }) {
-  const c = src.comment;
+  return (
+    <div className="gh-row">
+      <div className="gh-av" style={{ background: color.bg, color: color.fg }}>
+        {initialsOf(msg.author)}
+      </div>
+      <div className="gh-comment" data-request={msg.isRequest || undefined}>
+        <div className="gh-comment-head">
+          <b>{msg.author}</b>
+          {msg.at ? <span>commented {ago(msg.at)}</span> : <span>opened this issue</span>}
+          {msg.isRequest && <span className="gh-request-tag">이 댓글로 들어온 요청</span>}
+        </div>
+        <div className="gh-comment-body">
+          <Markdown text={msg.text} mark={marks} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function GithubThread({ d, desk, posted }: { d: InboxDetail; desk: string; posted?: string }) {
+  const src = d.source as GithubSource;
+  const [owner, repo] = (src.repo ?? d.target?.split("#")[0] ?? "").split("/");
+  const comments = src.comments ?? [];
+  const marks = d.injection?.sentences.map((s) => s.text) ?? [];
+  const color = channelColor("github");
+  const slot = slotText(d, desk, "comment");
+  const count = comments.length + (posted ? 1 : 0);
   return (
     <div className="gh">
       <div className="gh-repo">
         <IconRepo />
-        <span>{src.owner}</span>
+        <span>{owner}</span>
         <span className="gh-muted">/</span>
-        <b>{src.repo}</b>
-        <span className="gh-public">Public</span>
+        <b>{repo}</b>
       </div>
-      {src.showTabs && (
-        <div className="gh-tabs">
-          <span>Code</span>
-          <span data-active>
-            Issues<span className="gh-count">{src.issuesCount}</span>
-          </span>
-          <span>Pull requests</span>
-          <span>Discussions</span>
-        </div>
-      )}
+      <div className="gh-tabs">
+        <span>Code</span>
+        <span data-active>Issues</span>
+        <span>Pull requests</span>
+        <span>Discussions</span>
+      </div>
       <div className="gh-body">
         <div className="gh-head">
           <div className="gh-title">
-            {title} <span>#{src.number}</span>
+            {src.title ?? d.title} {src.number != null && <span>#{src.number}</span>}
           </div>
           <div className="gh-meta">
             <span className="gh-open">
@@ -60,37 +90,36 @@ function GithubSource({
               <span>Open</span>
             </span>
             <span>
-              <b>{c.author}</b> opened {src.openedAgo} · {posted ? "1 comment" : "0 comments"}
+              {src.author && <b>{src.author}</b>} opened · {count} comment{count === 1 ? "" : "s"}
             </span>
           </div>
         </div>
-        <div className="gh-row">
-          <div className="gh-av" style={{ background: CHANNEL_COLOR.github.bg, color: CHANNEL_COLOR.github.fg }}>
-            {initials}
-          </div>
-          <div className="gh-comment">
-            <div className="gh-comment-head">
-              <b>{c.author}</b>
-              <span>commented {c.ago}</span>
-            </div>
-            <div className="gh-comment-body">
-              <div>{c.body}</div>
-              {c.injection && <div className="gh-injection">{c.injection}</div>}
-            </div>
-          </div>
-        </div>
-        {src.warning ? (
+        {src.body && (
+          <Comment msg={{ author: src.author ?? d.requester, text: src.body, at: null }} marks={[]} color={color} />
+        )}
+        {comments.map((c, i) => (
+          <Comment key={i} msg={c} marks={c.isRequest ? marks : []} color={color} />
+        ))}
+        {!src.body && !comments.length && (
+          <Comment
+            msg={{ author: d.requester, text: d.question, at: d.arrivedAt, isRequest: true }}
+            marks={marks}
+            color={color}
+          />
+        )}
+        {d.injection && (
           <div className="gh-slot" data-warning>
             <IconWarn style={{ flexShrink: 0 }} />
-            <span>{src.warning}</span>
+            <span>{d.injection.note}</span>
           </div>
-        ) : (
+        )}
+        {(posted || slot) && (
           <div className="gh-row">
             <div className="gh-av" data-agent>
-              {src.agentInitials}
+              {initialsOf(desk)}
             </div>
             <div className="gh-slot" data-posted={posted ? true : undefined}>
-              {posted ?? `${agentShort} 에이전트의 댓글은 결재가 끝나면 이 자리에 등록됩니다.`}
+              {posted ?? slot}
             </div>
           </div>
         )}
@@ -99,26 +128,21 @@ function GithubSource({
   );
 }
 
-function SlackSource({
-  src,
-  agentShort,
-  posted,
-}: {
-  src: SlackSourceView;
-  agentShort: string;
-  posted?: string;
-}) {
-  const sq = (size: number, font: number, radius: number) => ({
-    width: size,
-    height: size,
-    borderRadius: radius,
-    fontSize: font,
-  });
+function SlackThread({ d, desk, posted }: { d: InboxDetail; desk: string; posted?: string }) {
+  const src = d.source as SlackSource;
+  const messages: ThreadMessage[] = src.messages?.length
+    ? src.messages
+    : [{ author: d.requester, text: d.question, at: d.arrivedAt, isRequest: true }];
+  const marks = d.injection?.sentences.map((s) => s.text) ?? [];
+  const where = src.dm ? d.requester : `#${src.channelId ?? "channel"}`;
+  const slot = slotText(d, desk, "reply");
+  const sq = (size: number, font: number, radius: number) => ({ width: size, height: size, borderRadius: radius, fontSize: font });
+  const day = dayTime(messages[0]?.at).split(" ")[0];
   return (
     <div className="sl">
       <div className="sl-side">
         <div className="sl-ws">
-          <b>{src.workspace}</b>
+          <b>Slack</b>
           <IconPencil stroke="#efe6f1" />
         </div>
         <div className="sl-group">
@@ -131,58 +155,71 @@ function SlackSource({
             <span>초안 및 전송됨</span>
           </div>
         </div>
-        <div className="sl-group">
-          <div className="sl-group-label">채널</div>
-          {["공지", "질문-답변", "자료-공유"].map((c) => (
-            <div key={c} className="sl-item">
-              <span className="hash">#</span>
-              <span>{c}</span>
+        {src.dm ? (
+          <div className="sl-group">
+            <div className="sl-group-label">다이렉트 메시지</div>
+            <div className="sl-item" data-dm data-active>
+              <span className="sl-presence" />
+              <span>{d.requester}</span>
             </div>
-          ))}
-        </div>
-        <div className="sl-group">
-          <div className="sl-group-label">다이렉트 메시지</div>
-          <div className="sl-item" data-dm data-active>
-            <span className="sl-presence" />
-            <span>{src.team}</span>
           </div>
-          <div className="sl-item" data-dm>
-            <span className="sl-presence" />
-            <span>이다영 (나)</span>
+        ) : (
+          <div className="sl-group">
+            <div className="sl-group-label">채널</div>
+            <div className="sl-item" data-active>
+              <span className="hash">#</span>
+              <span>{src.channelId}</span>
+            </div>
           </div>
-        </div>
+        )}
       </div>
       <div className="sl-main">
         <div className="sl-head">
-          <div className="sl-sq" style={sq(26, 10, 6)}>
-            {src.initials}
-          </div>
-          <b>{src.team}</b>
-          <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#1f7a4d" }} />
+          {src.dm ? (
+            <div className="sl-sq" style={sq(26, 10, 6)}>
+              {d.requesterInitials}
+            </div>
+          ) : (
+            <span style={{ color: "#55595f", fontWeight: 700 }}>#</span>
+          )}
+          <b>{src.dm ? d.requester : src.channelId}</b>
+          {src.threadTs && <span style={{ fontSize: 12, color: "#55595f" }}>스레드</span>}
         </div>
         <div className="sl-msgs">
-          <div className="sl-day">
-            <span />
-            <span className="sl-day-label">{src.day}</span>
-            <span />
-          </div>
-          {src.messages.map((m, i) => (
+          {day && (
+            <div className="sl-day">
+              <span />
+              <span className="sl-day-label">{day}</span>
+              <span />
+            </div>
+          )}
+          {messages.map((m, i) => (
             <div key={i} className="sl-msg">
-              <div className="sl-sq" style={sq(36, 12, 8)}>
-                {src.initials}
+              <div className="sl-sq" style={sq(36, hasHangul(m.author) ? 11 : 12, 8)}>
+                {initialsOf(m.author)}
               </div>
               <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
                 <div className="sl-msg-name">
-                  <b>{src.team}</b>
-                  <span>{m.time}</span>
+                  <b>{m.author}</b>
+                  <span>{clock(m.at)}</span>
                 </div>
-                <div className="sl-msg-text">{m.text}</div>
+                <div className="sl-msg-text">
+                  <Markdown text={m.text} mark={m.isRequest ? marks : []} />
+                </div>
               </div>
             </div>
           ))}
-          <div className="sl-slot" data-posted={posted ? true : undefined}>
-            {posted ?? `${agentShort} 에이전트의 답장은 결재가 끝나면 이 대화로 전송됩니다.`}
-          </div>
+          {d.injection && (
+            <div className="sl-slot">
+              <IconWarn style={{ flexShrink: 0, marginRight: 8 }} />
+              {d.injection.note}
+            </div>
+          )}
+          {(posted || slot) && (
+            <div className="sl-slot" data-posted={posted ? true : undefined}>
+              {posted ?? slot}
+            </div>
+          )}
         </div>
         <div className="sl-composer">
           <div className="sl-toolbar">
@@ -191,64 +228,58 @@ function SlackSource({
             <u>U</u>
             <s>S</s>
           </div>
-          <div className="sl-input">{src.team}에게 메시지 보내기</div>
+          <div className="sl-input">{where}에 메시지 보내기</div>
         </div>
       </div>
     </div>
   );
 }
 
+const ARRIVED: Record<string, string> = { github: "GitHub 이슈로 들어옴", slack: "Slack 메시지로 들어옴" };
+
 /** 결재 상세: 원본 화면 + 답변 초안 */
-export function ApprovalView({
-  detail,
-  draft,
-  readOnly,
-}: {
-  detail: ApprovalDetail;
-  draft: DraftState;
-  readOnly?: boolean;
-}) {
-  const { openAdmin } = useApp();
-  const { item, source } = detail;
-  const posted = draft.phase === "posted" ? draft.postedText ?? draft.text : undefined;
-  const isGithub = source.kind === "github";
-  const openUrl = isGithub ? `https://${source.url}` : "https://app.slack.com/client";
+export function ApprovalView({ detail: d, readOnly }: { detail: InboxDetail; readOnly?: boolean }) {
+  const { tasks } = useData();
+  const desk = d.agent?.desk ?? d.task?.id ?? "대응";
+  const posted = d.draft.phase === "posted" ? d.draft.text : undefined;
+  const isGithub = d.source.kind === "github";
+  const slackDm = d.source.kind === "slack" && !!(d.source as SlackSource).dm;
+  const arrived = slackDm ? "Slack 다이렉트 메시지로 들어옴" : (ARRIVED[d.channel] ?? `${d.channelLabel}로 들어옴`);
+  const openUrl = (isGithub ? (d.source as GithubSource).issueUrl : undefined) ?? d.sourceUrl;
 
   return (
     <>
       <div className="detail-bar">
-        <span>{detail.taskLabel}</span>
+        <span>{d.task?.name ?? "담당 태스크 없음"}</span>
         <span className="detail-bar-sep">/</span>
-        <span className={isGithub ? "mono" : undefined}>{detail.target}</span>
+        <span className={isGithub ? "mono" : undefined}>{d.target ?? d.channelLabel}</span>
         <div className="grow" />
-        {detail.headerLink.to === "sandbox" ? (
-          <button type="button" className="link-btn" onClick={() => openAdmin("sandbox", "public")}>
+        {d.approvalId != null && (
+          <Link href={`/inbox/all/${d.id}`} className="link-btn">
             <IconLink />
-            <span>{detail.headerLink.label}</span>
-          </button>
-        ) : (
-          <Link href={`/inbox/all/${item.approvalId}`} className="link-btn">
-            <IconLink />
-            <span>{detail.headerLink.label}</span>
+            <span>결재함에서 결재 {d.approvalId} 보기</span>
           </Link>
         )}
       </div>
       <div className="detail-body">
         <div className="detail-head">
           <div className="detail-title">
-            <h2>{item.title}</h2>
-            <Link href={`/chat/${item.taskId}`} className="detail-chat" aria-label="이 결재에 대해 대화">
+            <h2>{d.title}</h2>
+            <Link href={chatHref(d, tasks)} className="detail-chat" aria-label="이 결재에 대해 대화">
               <IconChat size={16} />
-              {detail.commentCount != null && <span>{detail.commentCount}</span>}
             </Link>
             <div className="grow" />
-            <StatePill state={item.state} wide />
+            <BadgePill badge={d.badge} wide />
           </div>
           <div className="detail-requester">
-            <RequesterAvatar initials={item.initials} channel={item.channel} color={detail.requesterColor} />
+            <RequesterAvatar initials={d.requesterInitials} channel={d.channel} />
             <div>
-              <b>{item.requester}</b>
-              <span>{detail.arrived}</span>
+              <b>{d.requester}</b>
+              <span>
+                {arrived}
+                {d.arrivedAt ? ` · ${dayTime(d.arrivedAt)}` : ""}
+                {d.gradeSource === "source" ? " · 등록된 소스의 등급" : ""}
+              </span>
             </div>
           </div>
         </div>
@@ -260,9 +291,7 @@ export function ApprovalView({
               <IconChat stroke="#6b4200" style={{ flexShrink: 0 }} />
             )}
             <b>원본 화면</b>
-            <span className={`source-bar-url${isGithub ? " mono" : ""}`}>
-              {isGithub ? source.url : source.label}
-            </span>
+            <span className={`source-bar-url${isGithub ? " mono" : ""}`}>{d.sourceUrl.replace(/^https?:\/\//, "")}</span>
             <div className="grow" />
             <span className="source-bar-ro">읽기 전용</span>
             <a href={openUrl} target="_blank" rel="noopener noreferrer">
@@ -270,17 +299,13 @@ export function ApprovalView({
               <IconExternal />
             </a>
           </div>
-          {source.kind === "github" ? (
-            <GithubSource
-              src={source}
-              title={item.title}
-              initials={item.initials}
-              agentShort={detail.agentShort} posted={posted} />
+          {isGithub ? (
+            <GithubThread d={d} desk={desk} posted={posted} />
           ) : (
-            <SlackSource src={source} agentShort={detail.agentShort} posted={posted} />
+            <SlackThread d={d} desk={desk} posted={posted} />
           )}
         </section>
-        <DraftCard draft={draft} readOnly={readOnly} />
+        <DraftCard detail={d} readOnly={readOnly} />
       </div>
     </>
   );

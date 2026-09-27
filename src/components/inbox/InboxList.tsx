@@ -1,84 +1,91 @@
 "use client";
 
 import { AgentIcon, IconChat, IconFilter, IconSort } from "@/components/icons";
-import type { Grade, InboxItem, Task } from "@/lib/api/types";
+import type { InboxItem, SandboxLevel, TaskView } from "@/lib/api/types";
+import { listTime } from "@/lib/format";
 import { isAwaiting, useData } from "@/store/app-store";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
-import { RequesterAvatar, StatePill } from "./parts";
+import { BadgePill, RequesterAvatar } from "./parts";
 
 export type ListTab = "all" | "awaiting" | "auto";
 
 export interface ListView {
   tab: ListTab;
-  grade: Grade | "all";
+  grade: SandboxLevel | "all";
   newestFirst: boolean;
 }
 
+/** 결재함 목록은 서버가 최신순으로 준다. 태스크 · 탭 · 등급은 화면에서 거른다 */
 export function filterItems(items: InboxItem[], scope: string, view: ListView) {
   const list = items.filter(
     (i) =>
-      (scope === "all" || i.taskId === scope) &&
-      (view.tab === "all" || (view.tab === "awaiting" ? isAwaiting(i) : i.state === "auto")) &&
+      (scope === "all" || i.task?.id === scope) &&
+      (view.tab === "all" || (view.tab === "awaiting" ? isAwaiting(i) : false)) &&
       (view.grade === "all" || i.grade === view.grade),
   );
   return view.newestFirst ? list : [...list].reverse();
 }
 
-function AgentTag({ task }: { task: Task }) {
-  return (
-    <span className="rfa-agent-tag" title={`${task.agentName} 담당`}>
-      <i style={{ background: task.color.bg, color: task.color.fg }}>
-        <AgentIcon name={task.icon} size={9} stroke={2.6} />
-      </i>
-      {task.agentShort}
-    </span>
-  );
+/** 행이 가리키는 대화 상대: 담당 에이전트 → 태스크의 에이전트 → 비서 */
+export function chatHref(item: Pick<InboxItem, "agent" | "task">, tasks: TaskView[]) {
+  if (item.agent) return `/chat/${item.agent.id}`;
+  const t = item.task && tasks.find((x) => x.id === item.task!.id);
+  return t ? `/chat/${t.agentId}` : "/chat";
 }
 
-function Row({
-  item,
-  scope,
-  selected,
-  task,
-}: {
-  item: InboxItem;
-  scope: string;
-  selected: boolean;
-  task?: Task;
-}) {
+function AgentTag({ item }: { item: InboxItem }) {
+  if (item.agent)
+    return (
+      <span className="rfa-agent-tag" title={`${item.agent.name} 담당`}>
+        <i style={{ background: item.agent.color.bg, color: item.agent.color.fg }}>
+          <AgentIcon name={item.agent.icon} size={9} stroke={2.6} />
+        </i>
+        {item.agent.desk}
+      </span>
+    );
+  if (item.task)
+    return (
+      <span className="rfa-agent-tag" title={`${item.task.name} 태스크`} style={{ paddingLeft: 7 }}>
+        {item.task.id}
+      </span>
+    );
+  return null;
+}
+
+function Row({ item, scope, selected }: { item: InboxItem; scope: string; selected: boolean }) {
+  const { tasks } = useData();
   const urgent = isAwaiting(item);
-  const quiet = item.state === "auto" || item.state === "done";
-  const href = item.hasDetail ? `/inbox/${scope}/${item.approvalId}` : `/inbox/${item.taskId}`;
+  const quiet = item.status === "closed" || item.status === "stalled";
   return (
     <div className="row">
       <Link
-        href={href}
+        href={`/inbox/${scope}/${item.id}`}
         className="row-link"
         aria-current={selected ? "page" : undefined}
         data-urgent={urgent || undefined}
         data-quiet={quiet || undefined}
       >
-        <RequesterAvatar initials={item.initials} channel={item.channel} />
+        <RequesterAvatar initials={item.requesterInitials} channel={item.channel} />
         <div className="row-text">
           <div className="row-who">
             <span>{item.requester}</span>
-            {scope === "all" && task && <AgentTag task={task} />}
+            {scope === "all" && <AgentTag item={item} />}
           </div>
           <div className="row-title">{item.title}</div>
           <div className="row-status">
-            <span className="rfa-grade" data-grade={item.grade}>
-              {item.grade}
+            <span className="rfa-grade" data-grade={item.gradeLabel}>
+              {item.gradeLabel}
             </span>
-            {item.statusText}
+            {item.statusLine}
           </div>
         </div>
         <div className="row-side">
-          <StatePill state={item.state} />
-          <span className="row-time">{item.time}</span>
+          <BadgePill badge={item.badge} />
+          <span className="row-time">{listTime(item.arrivedAt ?? item.updatedAt)}</span>
         </div>
       </Link>
-      <Link className="row-chat" href={`/chat/${item.taskId}`} aria-label="이 결재에 대해 대화">
+      <Link className="row-chat" href={chatHref(item, tasks)} aria-label="이 결재에 대해 대화">
         <IconChat size={14} />
         <span>대화</span>
       </Link>
@@ -97,10 +104,12 @@ export function InboxList({
   view: ListView;
   onView: (v: ListView) => void;
 }) {
-  const { inbox, tasks } = useData();
-  const taskById = new Map(tasks.map((t) => [t.id, t]));
+  const { inbox, summary, inboxError } = useData();
   const items = filterItems(inbox, scope, view);
-  const awaitingCount = inbox.filter((i) => (scope === "all" || i.taskId === scope) && isAwaiting(i)).length;
+  const awaitingCount =
+    scope === "all"
+      ? (summary?.needsApproval ?? inbox.filter(isAwaiting).length)
+      : (summary?.byTask[scope] ?? inbox.filter((i) => i.task?.id === scope && isAwaiting(i)).length);
 
   const [menu, setMenu] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -128,17 +137,17 @@ export function InboxList({
   const tabs: { id: ListTab; label: string }[] = [
     { id: "all", label: "전체" },
     { id: "awaiting", label: `결재 필요 ${awaitingCount}` },
-    { id: "auto", label: "자동응답" },
+    { id: "auto", label: summary?.autoReplied ? `자동응답 ${summary.autoReplied}` : "자동응답" },
   ];
   const grades: { id: ListView["grade"]; label: string }[] = [
     { id: "all", label: "모든 등급" },
-    { id: "사외", label: "사외만" },
-    { id: "사내", label: "사내만" },
+    { id: "public", label: "사외만" },
+    { id: "company", label: "사내만" },
   ];
 
   return (
     <section className="list" aria-label="요청 목록" data-scope={scope}>
-      <div className="list-head" style={{ position: "sticky" }}>
+      <div className="list-head">
         <div role="tablist" aria-label="보기" style={{ display: "contents" }}>
           {tabs.map((t) => (
             <button
@@ -158,7 +167,7 @@ export function InboxList({
           ref={btnRef}
           type="button"
           className="list-icon"
-          aria-label={view.grade === "all" ? "필터" : `필터 · ${view.grade}만`}
+          aria-label={view.grade === "all" ? "필터" : `필터 · ${view.grade === "public" ? "사외" : "사내"}만`}
           aria-haspopup="menu"
           aria-expanded={menu}
           style={view.grade !== "all" ? { color: "var(--accent)" } : undefined}
@@ -198,15 +207,11 @@ export function InboxList({
       </div>
       <div style={{ display: "flex", flexDirection: "column" }}>
         {items.map((i) => (
-          <Row
-            key={i.key}
-            item={i}
-            scope={scope}
-            selected={i.approvalId === selectedId}
-            task={taskById.get(i.taskId)}
-          />
+          <Row key={i.id} item={i} scope={scope} selected={i.id === selectedId} />
         ))}
-        {items.length === 0 && <p className="list-empty">조건에 맞는 요청이 없습니다</p>}
+        {items.length === 0 && (
+          <p className="list-empty">{inboxError ? `결재함을 불러오지 못했습니다: ${inboxError}` : "조건에 맞는 요청이 없습니다"}</p>
+        )}
       </div>
     </section>
   );

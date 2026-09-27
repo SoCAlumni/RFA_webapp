@@ -3,11 +3,12 @@
 import { AdminModal } from "@/components/admin/AdminModal";
 import { ChatWorkspace } from "@/components/chat/ChatWorkspace";
 import { Dialogs } from "@/components/dialogs/Dialogs";
+import { TaskProgress } from "@/components/dialogs/TaskProgress";
 import { IconBurger } from "@/components/icons";
-import type { ChatRequest, RefLink } from "@/lib/api/types";
+import type { ChatStreamRequest, ConversationSummary, RefLink } from "@/lib/api/types";
 import { useApp, useData } from "@/store/app-store";
 import { usePathname, useRouter } from "next/navigation";
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { Sidebar } from "./Sidebar";
 
 function parseRoute(pathname: string) {
@@ -18,32 +19,64 @@ function parseRoute(pathname: string) {
 
 function ChatHost({ agentId }: { agentId?: string }) {
   const router = useRouter();
-  const { api } = useApp();
-  const { chatAgents, chatSeeds, session, inbox } = useData();
-  const assistant = chatAgents.find((a) => a.kind === "assistant")!;
+  const { api, sandboxList } = useApp();
+  const { agents, me, inbox, summary } = useData();
+  const assistant = agents.find((a) => a.kind === "assistant") ?? agents[0];
+  // 「맡은 안건 N건」은 결재함 요약의 태스크별 결재 필요 수
+  const people = useMemo(
+    () =>
+      agents.map((a) =>
+        a.kind === "task" && a.taskId && summary?.byTask[a.taskId] != null
+          ? { ...a, itemCount: summary.byTask[a.taskId] }
+          : a,
+      ),
+    [agents, summary],
+  );
   const runQuery = useCallback(
-    (req: ChatRequest, signal: AbortSignal) => api.streamChat(req, signal),
+    (req: ChatStreamRequest, signal: AbortSignal) => api.chat(req, signal),
     [api],
   );
-  const onSelectAgent = useCallback((id: string) => {
-    window.history.replaceState(null, "", id === assistant.id ? "/chat" : `/chat/${id}`);
-  }, [assistant.id]);
+  const loadConversation = useCallback((id: string) => api.getConversation(id), [api]);
+
+  // 소유자의 저장된 대화: 대화 상대마다 GET /conversations?agentId= (게스트는 늘 빈 배열이라 묻지 않는다)
+  const [remote, setRemote] = useState<ConversationSummary[] | undefined>(undefined);
+  const ids = people.map((a) => a.id).join(",");
+  useEffect(() => {
+    if (me.role !== "owner") return;
+    let alive = true;
+    Promise.allSettled(ids.split(",").map((id) => api.listConversations(id))).then((all) => {
+      if (!alive) return;
+      setRemote(all.flatMap((r) => (r.status === "fulfilled" ? r.value : [])));
+    });
+    return () => {
+      alive = false;
+    };
+  }, [api, ids, me.role]);
+
+  const onSelectAgent = useCallback(
+    (id: string) => {
+      window.history.replaceState(null, "", id === assistant.id ? "/chat" : `/chat/${id}`);
+    },
+    [assistant.id],
+  );
   const onRefClick = (r: RefLink) => {
     if (r.kind !== "approval") return;
-    const item = inbox.find((i) => i.approvalId === r.id);
-    if (item) router.push(item.hasDetail ? `/inbox/all/${item.approvalId}` : `/inbox/${item.taskId}`);
+    const item = inbox.find((i) => String(i.approvalId) === r.id || i.id === r.id);
+    if (item) router.push(`/inbox/all/${item.id}`);
   };
+  const provider = sandboxList?.sandboxes.find((s) => s.default)?.provider;
   return (
     <ChatWorkspace
       assistant={assistant}
-      agents={chatAgents}
-      seed={chatSeeds}
+      agents={people}
+      remote={remote}
+      loadConversation={loadConversation}
       selectedAgentId={agentId}
       onSelectAgent={onSelectAgent}
       runQuery={runQuery}
       suggestions={assistant.suggestions}
-      disclosureNote={session.disclosureNote}
-      role={session.role}
+      disclosureNote={`대화 내용은 ${provider ?? "LLM API"}로 추론합니다. 답변은 등급 검사를 거쳐 나옵니다.`}
+      role={me.role}
       onRefClick={onRefClick}
     />
   );
@@ -145,6 +178,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           <div className="scrim" onClick={closeNav} />
           <AdminModal />
           <Dialogs />
+          <TaskProgress />
         </>
       )}
       <Toast />

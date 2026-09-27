@@ -1,13 +1,16 @@
 import { AgentIcon } from "@/components/icons";
-import type { Channel, Color, ItemState } from "@/lib/api/types";
+import type { Badge, BadgeTone, Color, IconName } from "@/lib/api/types";
 
-export const CHANNEL_COLOR: Record<Channel, Color> = {
+export const CHANNEL_COLOR: Record<string, Color> = {
   github: { bg: "#d6e2fb", fg: "#1c3a8a" },
   slack: { bg: "#f6e3c5", fg: "#6b4200" },
   mail: { bg: "#f5d9e6", fg: "#7a1f4d" },
 };
+const OTHER_COLOR: Color = { bg: "#e6e8ee", fg: "#3c424e" };
 
-const CHANNEL_ICON = { github: "github", slack: "slack", mail: "mail" } as const;
+const CHANNEL_ICON: Record<string, IconName> = { github: "github", slack: "slack", mail: "mail" };
+
+export const channelColor = (channel: string) => CHANNEL_COLOR[channel] ?? OTHER_COLOR;
 
 export const hasHangul = (s: string) => /[가-힣]/.test(s);
 
@@ -15,10 +18,10 @@ export const hasHangul = (s: string) => /[가-힣]/.test(s);
 export function RequesterAvatar({
   initials,
   channel,
-  color = CHANNEL_COLOR[channel],
+  color = channelColor(channel),
 }: {
   initials: string;
-  channel: Channel;
+  channel: string;
   color?: Color;
 }) {
   return (
@@ -31,25 +34,20 @@ export function RequesterAvatar({
         {initials}
       </div>
       <div className="avatar-badge" style={{ background: color.fg }}>
-        <AgentIcon name={CHANNEL_ICON[channel]} size={10} stroke={3} />
+        <AgentIcon name={CHANNEL_ICON[channel] ?? "generic"} size={10} stroke={3} />
       </div>
     </div>
   );
 }
 
-const PILL: Record<ItemState, { label: string; tone: string }> = {
-  pending: { label: "결재 필요", tone: "warn" },
-  blocked: { label: "차단됨", tone: "block" },
-  auto: { label: "자동응답", tone: "ok" },
-  done: { label: "결재 완료", tone: "mute" },
-  responded: { label: "응답 완료", tone: "mute" },
-};
+const TONE: Record<BadgeTone, string> = { warn: "warn", danger: "block", ok: "ok", muted: "mute", info: "info" };
 
-export function StatePill({ state, wide }: { state: ItemState; wide?: boolean }) {
-  const p = PILL[state];
+/** 서버가 정한 상태 배지(label · tone) */
+export function BadgePill({ badge, wide }: { badge: Badge; wide?: boolean }) {
+  const long = badge.label.length > 5;
   return (
-    <span className="pill" data-tone={p.tone} data-wide={(wide && state === "responded") || undefined}>
-      {p.label}
+    <span className="pill" data-tone={TONE[badge.tone] ?? "mute"} data-wide={(wide && long) || undefined}>
+      {badge.label}
     </span>
   );
 }
