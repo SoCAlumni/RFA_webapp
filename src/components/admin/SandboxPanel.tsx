@@ -139,8 +139,13 @@ function SandboxDetailView({ id }: { id: string }) {
             <h3>
               LLM 추론
               {inf.pendingRecreate.length > 0 && (
-                <span className="sb-pending" title={`다시 만들 때 적용: ${inf.pendingRecreate.join(", ")}`}>
-                  저장된 설정
+                <span
+                  className="sb-pending"
+                  title={`샌드박스에 아직 반영 안 됨: ${inf.pendingRecreate
+                    .map((k) => LABEL[k as keyof Form] ?? k)
+                    .join(", ")} · 샌드박스가 켜지면 적용`}
+                >
+                  아직 반영 안 됨
                 </span>
               )}
             </h3>
@@ -313,7 +318,7 @@ function SandboxDetailView({ id }: { id: string }) {
           <p>
             제공자와 모델은 프록시가 하나라 모든 샌드박스에 한꺼번에 적용됩니다
             {d.gateway.sharedWith.length ? ` (${[d.name, ...d.gateway.sharedWith].join(", ")})` : ""}. 컨텍스트 길이 · 최대
-            응답 길이는 샌드박스를 다시 만들 때 적용됩니다.
+            응답 길이는 이 샌드박스에만 바로 적용됩니다.
           </p>
           <div className="rfa-actions">
             <button type="button" className="rfa-btn" data-autofocus onClick={() => setConfirm(false)}>

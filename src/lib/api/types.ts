@@ -588,6 +588,8 @@ export interface AgentActionResult {
   action: "compact" | "clear-memory";
   applied: boolean;
   removedSessions?: number | null;
+  /** compact: OpenClaw 이 LLM 으로 요약한 세션 수 (기록을 지우지 않는다) */
+  compactedSessions?: number | null;
   note: string;
 }
 
@@ -654,6 +656,7 @@ export interface InferenceSettings {
   maxOutputTokens: number;
   contextLengthChoices: number[];
   maxOutputChoices: number[];
+  /** 저장했지만 실행 중인 샌드박스에 아직 없는 설정 (꺼진 샌드박스의 contextLength, 켜지면 자동 적용) */
   pendingRecreate: string[];
 }
 

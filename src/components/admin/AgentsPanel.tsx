@@ -266,9 +266,15 @@ function ContextCard({ agent }: { agent: AdminAgentDetail }) {
         </div>
       )}
       <div className="adm-actions">
-        <button type="button" className="adm-btn" disabled={!agent.actions.compact || !!busy} onClick={() => run("compact")}>
+        <button
+          type="button"
+          className="adm-btn"
+          title="최근에 이어 쓰는 대화를 LLM으로 요약해 컨텍스트를 줄입니다. 최근 턴은 그대로 두고 기록은 지우지 않습니다."
+          disabled={!agent.actions.compact || !!busy}
+          onClick={() => run("compact")}
+        >
           {busy === "compact" && <span className="spin" aria-hidden="true" />}
-          {busy === "compact" ? "압축하는 중" : "대화 압축"}
+          {busy === "compact" ? "요약해 압축하는 중" : "대화 압축"}
         </button>
         <button
           type="button"
@@ -307,7 +313,7 @@ function LoadedSourcesCard({ agent }: { agent: AdminAgentDetail }) {
     <section className="adm-card" aria-label="불러오는 자료">
       <div className="adm-card-head">
         <h3>불러오는 자료</h3>
-        <span>답할 때 찾아보는 사내 지식</span>
+        <span>답할 때 찾아보는 사내 지식 · 끈 자료는 조회 자체를 막습니다</span>
       </div>
       <ul className="ls-list">
         {agent.sources.map((s) => {
