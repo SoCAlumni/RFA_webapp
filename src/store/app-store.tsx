@@ -560,7 +560,7 @@ function useAppState() {
         setSandboxDetails((m) => ({ ...m, [id]: r.sandbox }));
         const parts = [
           r.applied.length ? `바로 적용됨: ${r.applied.join(", ")}` : "",
-          r.requiresRecreate.length ? `다시 만들 때 적용: ${r.requiresRecreate.join(", ")}` : "",
+          r.requiresRecreate.length ? `샌드박스가 켜지면 적용: ${r.requiresRecreate.join(", ")}` : "",
         ].filter(Boolean);
         notify(parts.join(" · ") || "바뀐 설정이 없습니다");
         loadAdmin();
