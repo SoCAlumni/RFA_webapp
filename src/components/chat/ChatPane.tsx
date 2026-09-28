@@ -215,6 +215,7 @@ function AgentRow({
   score,
   call,
   onRefClick,
+  skipped,
 }: {
   agent?: AgentView;
   agentId: string;
@@ -222,6 +223,8 @@ function AgentRow({
   score?: number;
   call?: DelegateCall;
   onRefClick?: (r: RefLink) => void;
+  /** agents.select 에서 제외됨(사유) */
+  skipped?: string;
 }) {
   const [open, setOpen] = useState(false);
   const s = call?.status;
@@ -235,11 +238,16 @@ function AgentRow({
           : s === "blocked"
             ? "샌드박스 정책으로 차단됨"
             : "실패"
-    : "찾음";
-  const line = call?.status === "running" ? (call.logs.at(-1) ?? call.task) : (call?.summary ?? reason);
+    : skipped !== undefined
+      ? "제외"
+      : "찾음";
+  const line =
+    call?.status === "running"
+      ? (call.logs.at(-1) ?? call.task)
+      : (call?.summary ?? (skipped !== undefined ? skipped || reason : reason));
   const expandable = !!call;
   return (
-    <div className="cp-agent" data-status={s ?? "found"}>
+    <div className="cp-agent" data-status={s ?? (skipped !== undefined ? "skipped" : "found")}>
       <button
         type="button"
         className="cp-agent-row"
@@ -255,6 +263,8 @@ function AgentRow({
         <span className="cp-agent-status" data-status={s ?? "found"}>
           {call ? (
             s === "running" ? <Spin /> : s === "ok" ? <Check /> : s === "none" ? <Dash /> : <Cross />
+          ) : skipped !== undefined ? (
+            <Dash />
           ) : (
             score != null && (
               <span className="cp-bar">
@@ -306,12 +316,19 @@ function Trace({
   const list = [st.understand, st.search, st.guard];
   const lastShown = list.map((v) => v !== "pending").lastIndexOf(true);
   const show = (i: number) => list[i] !== "pending" || i > lastShown;
-  const skipped = new Set(turn.selection?.skipped.map((s) => s.agentId) ?? []);
-  const people: { agentId: string; reason?: string; score?: number }[] = (
-    turn.search?.candidates ?? []
-  ).filter((c) => !skipped.has(c.agentId));
+  const skipped = new Map((turn.selection?.skipped ?? []).map((s) => [s.agentId, s.reason ?? ""]));
+  const candidates = turn.search?.candidates ?? [];
+  const people: { agentId: string; reason?: string; score?: number; skipped?: string }[] = candidates.filter(
+    (c) => !skipped.has(c.agentId),
+  );
   for (const c of turn.calls)
     if (!people.some((p) => p.agentId === c.agentId)) people.push({ agentId: c.agentId });
+  // 후보였지만 고르지 않은 담당자는 사유와 함께 뒤에 둔다
+  for (const [agentId, why] of skipped)
+    if (!people.some((p) => p.agentId === agentId))
+      people.push({ ...(candidates.find((c) => c.agentId === agentId) ?? { agentId }), skipped: why });
+  const noneSelected =
+    !!turn.selection && turn.selection.selected.length === 0 && candidates.length > 0 && !turn.calls.length;
   const guardLabel = turn.guard
     ? turn.guard.status === "running"
       ? `${gradeOf(turn.guard.level)} 등급으로 검사 중`
@@ -347,7 +364,11 @@ function Trace({
             <Step
               status={st.search}
               title="담당자 탐색"
-              meta={people.length ? `${people.length}명` : turn.search?.query}
+              meta={
+                people.length
+                  ? `${people.length - skipped.size}명${skipped.size ? ` · 제외 ${skipped.size}명` : ""}`
+                  : turn.search?.query
+              }
             >
               {turn.search && people.length === 0 && (
                 <div className="cp-step-text cp-step-none">
@@ -364,10 +385,14 @@ function Trace({
                       reason={p.reason}
                       score={p.score}
                       call={turn.calls.find((c) => c.agentId === p.agentId)}
+                      skipped={p.skipped}
                       onRefClick={onRefClick}
                     />
                   ))}
                 </div>
+              )}
+              {noneSelected && (
+                <div className="cp-step-text cp-step-none">담당자 호출 · 해당 없음. 비서가 직접 답합니다.</div>
               )}
             </Step>
           )}
@@ -473,7 +498,11 @@ function Composer({
   onStop,
   note,
   disabledReason,
+  attachItems = [],
+  mentionAgents = [],
 }: {
+  attachItems?: AttachItem[];
+  mentionAgents?: AgentView[];
   assistantName: string;
   busy: boolean;
   onSend: (text: string) => void;
@@ -505,6 +534,35 @@ function Composer({
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
+  const [menu, setMenu] = useState<"attach" | "mention" | null>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!menu) return;
+    const onDown = (e: MouseEvent) => {
+      if (!menuRef.current?.contains(e.target as Node)) setMenu(null);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        setMenu(null);
+        ref.current?.focus();
+      }
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey, true);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey, true);
+    };
+  }, [menu]);
+  const insert = (piece: string) => {
+    setText((t) => {
+      const base = t.replace(/@$/, "");
+      return `${base}${base && !/\s$/.test(base) ? " " : ""}${piece}`;
+    });
+    setMenu(null);
+    ref.current?.focus();
+  };
   const submit = () => {
     if (!text.trim() || busy || disabledReason) return;
     onSend(text);
@@ -513,6 +571,29 @@ function Composer({
   return (
     <div className="cp-composer">
       <div className="cp-composer-inner">
+        {menu && (
+          <div ref={menuRef} className="cp-menu" role="menu" aria-label={menu === "attach" ? "안건 붙이기" : "담당자 언급"}>
+            <div className="cp-menu-head">
+              {menu === "attach" ? "결재함의 안건을 질문에 붙입니다" : "담당자를 이름으로 부르면 비서가 그 담당자를 찾습니다"}
+            </div>
+            {(menu === "attach" ? attachItems : mentionAgents).length === 0 && (
+              <p className="cp-menu-empty">{menu === "attach" ? "붙일 안건이 없습니다" : "담당자가 없습니다"}</p>
+            )}
+            {menu === "attach"
+              ? attachItems.map((a) => (
+                  <button key={a.id} type="button" role="menuitem" onClick={() => insert(a.insert)}>
+                    <b>{a.label}</b>
+                    <span>{a.sub}</span>
+                  </button>
+                ))
+              : mentionAgents.map((a) => (
+                  <button key={a.id} type="button" role="menuitem" onClick={() => insert(`@${a.name} `)}>
+                    <b>{a.name}</b>
+                    <span>{a.taskName ?? a.description}</span>
+                  </button>
+                ))}
+          </div>
+        )}
         <div className="cp-box">
           <label htmlFor={id} className="sr-only">
             {assistantName}에게 물어보기
@@ -535,7 +616,16 @@ function Composer({
             }}
           />
           <div className="cp-box-tools">
-            <button type="button" className="cp-icon-btn cp-icon-btn-round" aria-label="안건 붙이기">
+            <button
+              type="button"
+              className="cp-icon-btn cp-icon-btn-round"
+              aria-label="안건 붙이기"
+              aria-haspopup="menu"
+              aria-expanded={menu === "attach"}
+              disabled={!!disabledReason}
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={() => setMenu((m) => (m === "attach" ? null : "attach"))}
+            >
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
                 <line x1="12" y1="5" x2="12" y2="19" />
                 <line x1="5" y1="12" x2="19" y2="12" />
@@ -544,11 +634,12 @@ function Composer({
             <button
               type="button"
               className="cp-icon-btn"
-              aria-label="언급"
-              onClick={() => {
-                setText((t) => (t.endsWith("@") ? t : `${t}@`));
-                ref.current?.focus();
-              }}
+              aria-label="담당자 언급"
+              aria-haspopup="menu"
+              aria-expanded={menu === "mention"}
+              disabled={!!disabledReason}
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={() => setMenu((m) => (m === "mention" ? null : "mention"))}
             >
               @
             </button>
@@ -581,6 +672,15 @@ function Composer({
   );
 }
 
+/** 입력창 「안건 붙이기」 메뉴 항목 */
+export interface AttachItem {
+  id: string;
+  label: string;
+  sub: string;
+  /** 질문에 넣을 글 */
+  insert: string;
+}
+
 /* ---------- 대화창 ---------- */
 
 export interface ChatPaneProps {
@@ -600,6 +700,7 @@ export interface ChatPaneProps {
   onRoleChange?: (r: Role) => void;
   focusAgentId?: string;
   onMessagesChange?: (m: ChatMessage[]) => void;
+  attachItems?: AttachItem[];
 }
 
 export function ChatPane(props: ChatPaneProps) {
@@ -619,6 +720,7 @@ export function ChatPane(props: ChatPaneProps) {
     focusAgentId,
     onMessagesChange,
     conversationId,
+    attachItems,
   } = props;
   const { messages, busy, send, stop, reset } = useChat(runQuery, initialMessages, {
     role,
@@ -756,6 +858,8 @@ export function ChatPane(props: ChatPaneProps) {
         onStop={stop}
         note={disclosureNote}
         disabledReason={blocked}
+        attachItems={attachItems}
+        mentionAgents={agents.filter((a) => a.kind === "task" && a.status !== "applying")}
       />
     </div>
   );

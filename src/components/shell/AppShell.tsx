@@ -37,6 +37,7 @@ function ChatHost({ agentId }: { agentId?: string }) {
     [api],
   );
   const loadConversation = useCallback((id: string) => api.getConversation(id), [api]);
+  const createConversation = useCallback((id: string) => api.createConversation(id), [api]);
 
   // 소유자의 저장된 대화: 대화 상대마다 GET /conversations?agentId= (게스트는 늘 빈 배열이라 묻지 않는다)
   const [remote, setRemote] = useState<ConversationSummary[] | undefined>(undefined);
@@ -65,12 +66,27 @@ function ChatHost({ agentId }: { agentId?: string }) {
     if (item) router.push(`/inbox/all/${item.id}`);
   };
   const provider = sandboxList?.sandboxes.find((s) => s.default)?.provider;
+  // 「안건 붙이기」: 결재 필요한 것 먼저, 최근 순
+  const attachItems = useMemo(
+    () =>
+      [...inbox]
+        .sort((a, b) => Number(b.status === "pending") - Number(a.status === "pending"))
+        .slice(0, 15)
+        .map((i) => ({
+          id: i.id,
+          label: i.approvalId != null ? `결재 ${i.approvalId} · ${i.title}` : i.title,
+          sub: `${i.requester} · ${i.statusLine}`,
+          insert: i.approvalId != null ? `결재 ${i.approvalId}(${i.title}) ` : `「${i.title}」 `,
+        })),
+    [inbox],
+  );
   return (
     <ChatWorkspace
       assistant={assistant}
       agents={people}
       remote={remote}
       loadConversation={loadConversation}
+      createConversation={createConversation}
       selectedAgentId={agentId}
       onSelectAgent={onSelectAgent}
       runQuery={runQuery}
@@ -78,6 +94,7 @@ function ChatHost({ agentId }: { agentId?: string }) {
       disclosureNote={`대화 내용은 ${provider ?? "LLM API"}로 추론합니다. 답변은 등급 검사를 거쳐 나옵니다.`}
       role={me.role}
       onRefClick={onRefClick}
+      attachItems={attachItems}
     />
   );
 }

@@ -120,5 +120,6 @@ export function createHttpApi(baseUrl: string, getRole: () => Role): RfaApi {
     listSandboxes: () => call("GET", "/admin/sandboxes"),
     getSandbox: (id) => call("GET", `/admin/sandboxes/${q(id)}`),
     updateSandbox: (id, patch) => call("PATCH", `/admin/sandboxes/${q(id)}`, patch),
+    addSandbox: () => call("POST", "/admin/sandboxes"),
   };
 }

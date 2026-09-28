@@ -133,6 +133,8 @@ export interface ChatWorkspaceProps
   /** 소유자의 저장된 대화 목록(게스트는 빈 배열) */
   remote?: ConversationSummary[];
   loadConversation?: (id: string) => Promise<ConversationDetail>;
+  /** 「+ 새 대화」: POST /conversations → 서버가 준 id (FE_API_GUIDE §2.1) */
+  createConversation?: (agentId: string) => Promise<ConversationSummary>;
 }
 
 interface WorkspaceState {
@@ -244,10 +246,12 @@ function reducer(st: WorkspaceState, a: Action): WorkspaceState {
 function SessionPane({
   session,
   dispatch,
+  onNewChat,
   ...pane
 }: Omit<ChatPaneProps, "onMessagesChange" | "onNewChat" | "initialMessages" | "conversationId"> & {
   session: Session;
   dispatch: (a: Action) => void;
+  onNewChat: (agentId: string) => void;
 }) {
   const { id, createdAt, agentId } = session;
   const onMessagesChange = useCallback(
@@ -262,7 +266,7 @@ function SessionPane({
       conversationId={id}
       initialMessages={session.seed}
       onMessagesChange={onMessagesChange}
-      onNewChat={() => dispatch({ type: "new", agentId, id: newConversationId(), at: Date.now() })}
+      onNewChat={() => onNewChat(agentId)}
     />
   );
 }
@@ -276,6 +280,7 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
     onSelectAgent,
     remote,
     loadConversation,
+    createConversation,
     ...paneProps
   } = props;
 
@@ -365,8 +370,22 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
       .filter((s) => s.agentId === agentId)
       .sort((a, b) => (summaries[b.id]?.updatedAt ?? b.createdAt) - (summaries[a.id]?.updatedAt ?? a.createdAt));
 
-  const newSession = (agentId: string) =>
-    dispatch({ type: "new", agentId, id: newConversationId(), at: Date.now() });
+  const newSession = (agentId: string) => {
+    // 아직 아무것도 묻지 않은 새 대화가 열려 있으면 그대로 쓴다
+    if (isEmptyLocal(st, st.current[agentId])) {
+      if (agentId !== active) select(agentId);
+      return;
+    }
+    if (!createConversation) {
+      dispatch({ type: "new", agentId, id: newConversationId(), at: Date.now() });
+      return;
+    }
+    createConversation(agentId).then(
+      (c) => dispatch({ type: "new", agentId, id: c.id, at: c.createdAt * 1000 }),
+      // 서버가 안 되면 브라우저가 만든 id 로(소유자면 첫 질문 때 서버가 저장한다)
+      () => dispatch({ type: "new", agentId, id: newConversationId(), at: Date.now() }),
+    );
+  };
 
   const openSession = (id: string) => {
     dispatch({ type: "open", id });
@@ -620,6 +639,7 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
                 assistant={assistant}
                 agents={agents}
                 focusAgentId={s.agentId === assistant.id ? undefined : s.agentId}
+                onNewChat={newSession}
               />
             </div>
           ))}

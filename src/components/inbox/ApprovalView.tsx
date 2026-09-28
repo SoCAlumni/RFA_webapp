@@ -250,7 +250,13 @@ export function ApprovalView({ detail: d, readOnly }: { detail: InboxDetail; rea
   return (
     <>
       <div className="detail-bar">
-        <span>{d.task?.name ?? "담당 태스크 없음"}</span>
+        {d.task ? (
+          <Link href={`/inbox/${d.task.id}`} className="detail-bar-task" title={`${d.task.name} 결재함`}>
+            {d.task.name}
+          </Link>
+        ) : (
+          <span>담당 태스크 없음</span>
+        )}
         <span className="detail-bar-sep">/</span>
         <span className={isGithub ? "mono" : undefined}>{d.target ?? d.channelLabel}</span>
         <div className="grow" />

@@ -5,6 +5,7 @@ import type { InboxItem, SandboxLevel, TaskView } from "@/lib/api/types";
 import { listTime } from "@/lib/format";
 import { isAwaiting, useData } from "@/store/app-store";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { BadgePill, RequesterAvatar } from "./parts";
 
@@ -104,8 +105,18 @@ export function InboxList({
   view: ListView;
   onView: (v: ListView) => void;
 }) {
-  const { inbox, summary, inboxError } = useData();
+  const router = useRouter();
+  const { inbox, summary, inboxError, tasks: sidebarTasks } = useData();
   const items = filterItems(inbox, scope, view);
+  // 결재가 달린 태스크(사이드바에 없는 태스크 포함)로 거르기
+  const taskOptions = [
+    ...new Map(
+      [
+        ...inbox.filter((i) => i.task).map((i) => [i.task!.id, i.task!.name] as const),
+        ...sidebarTasks.map((t) => [t.id, t.name] as const),
+      ],
+    ).entries(),
+  ];
   const awaitingCount =
     scope === "all"
       ? (summary?.needsApproval ?? inbox.filter(isAwaiting).length)
@@ -168,6 +179,7 @@ export function InboxList({
           type="button"
           className="list-icon"
           aria-label={view.grade === "all" ? "필터" : `필터 · ${view.grade === "public" ? "사외" : "사내"}만`}
+          title="태스크 · 등급으로 거르기"
           aria-haspopup="menu"
           aria-expanded={menu}
           style={view.grade !== "all" ? { color: "var(--accent)" } : undefined}
@@ -186,7 +198,26 @@ export function InboxList({
           <IconSort />
         </button>
         {menu && (
-          <div ref={menuRef} className="list-menu" role="menu" aria-label="결재 대상 등급">
+          <div ref={menuRef} className="list-menu" role="menu" aria-label="거르기">
+            <div className="list-menu-head">태스크</div>
+            {[["all", "모든 태스크"] as const, ...taskOptions].map(([id, name]) => {
+              const n = id === "all" ? (summary?.needsApproval ?? 0) : (summary?.byTask[id] ?? 0);
+              return (
+                <button
+                  key={id}
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={scope === id}
+                  onClick={() => {
+                    setMenu(false);
+                    router.push(id === "all" ? "/inbox" : `/inbox/${id}`);
+                  }}
+                >
+                  <span>{name}</span>
+                  {n > 0 && <em>{n}</em>}
+                </button>
+              );
+            })}
             <div className="list-menu-head">결재 대상 등급</div>
             {grades.map((g) => (
               <button

@@ -1,7 +1,7 @@
 "use client";
 
 import type { DraftPhase, InboxDetail, Step } from "@/lib/api/types";
-import { seconds } from "@/lib/format";
+import { dayTime, seconds } from "@/lib/format";
 import { useApp } from "@/store/app-store";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -63,6 +63,55 @@ function StepRow({ step, index, open, onToggle }: { step: Step; index: number; o
         </ul>
       )}
     </li>
+  );
+}
+
+const WHO: Record<string, string> = { desk: "대응 에이전트", human: "사람", publisher: "게시", system: "시스템" };
+const WHAT: Record<string, string> = {
+  pending: "결재 요청",
+  approved: "승인",
+  rejected: "재생성 요청",
+  posted: "게시됨",
+  closed: "닫힘",
+};
+
+/** 결재 기록(events)과 이전 초안(regenerations) */
+function History({ detail }: { detail: InboxDetail }) {
+  const { events } = detail;
+  const regens = detail.draft.regenerations;
+  if (!events.length && !regens.length) return null;
+  return (
+    <details className="dc-history">
+      <summary>
+        기록 · {events.length}건{regens.length ? ` · 이전 초안 ${regens.length}개` : ""}
+      </summary>
+      {events.length > 0 && (
+        <ol className="dc-timeline">
+          {events.map((e, i) => (
+            <li key={i}>
+              <time>{dayTime(e.at)}</time>
+              <b>{WHAT[e.what ?? ""] ?? e.what}</b>
+              <span>
+                {WHO[e.who ?? ""] ?? e.who}
+                {e.detail ? ` · ${e.detail === "edited" ? "고친 초안으로" : e.detail}` : ""}
+              </span>
+            </li>
+          ))}
+        </ol>
+      )}
+      {regens.map((r, i) => (
+        <div key={i} className="dc-old">
+          <div>
+            <b>{i + 1}번째 초안</b>
+            <span>
+              {dayTime(r.at)}
+              {r.request ? ` · 요청 「${r.request}」` : ""}
+            </span>
+          </div>
+          {r.draft && <p>{r.draft}</p>}
+        </div>
+      ))}
+    </details>
   );
 }
 
@@ -262,6 +311,11 @@ export function DraftCard({ detail, readOnly }: { detail: InboxDetail; readOnly?
               </span>
             </label>
             <span className="dc-count">
+              {edited && editable && (
+                <button type="button" className="dc-revert" onClick={() => setDraftText(detail.id, draft.text)}>
+                  되돌리기
+                </button>
+              )}
               {edited && phase !== "posted" && <b>수정함 · </b>}
               {text.length}자 · {detail.gradeLabel}로 나감
             </span>
@@ -321,6 +375,7 @@ export function DraftCard({ detail, readOnly }: { detail: InboxDetail; readOnly?
           </button>
         </div>
       )}
+      <History detail={detail} />
       {asking && (
         <RegenModal
           left={draft.regenerationsLeft}

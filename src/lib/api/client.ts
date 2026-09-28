@@ -72,6 +72,8 @@ export interface RfaApi {
   listSandboxes(): Promise<SandboxList>;
   getSandbox(id: string): Promise<SandboxDetail>;
   updateSandbox(id: string, patch: SandboxPatch): Promise<SandboxUpdateResult>;
+  /** 지금은 항상 409 sandbox_limit 또는 501 not_supported (FE_API_GUIDE §5.1) */
+  addSandbox(): Promise<unknown>;
 }
 
 /** 서버 오류. code 로 분기하고 message 는 그대로 화면에 보인다 */

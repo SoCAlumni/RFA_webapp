@@ -337,7 +337,7 @@ function SandboxDetailView({ id }: { id: string }) {
 }
 
 export function SandboxPanel() {
-  const { admin, sandboxList, selectSandbox, setDialog } = useApp();
+  const { admin, sandboxList, selectSandbox, setDialog, api, fail, notify } = useApp();
   if (!sandboxList)
     return (
       <div className="loading">
@@ -362,8 +362,12 @@ export function SandboxPanel() {
             type="button"
             className="adm-add"
             data-keep
-            // 한도가 차면 POST 없이 안내만 보여 준다(FE_API_GUIDE §5.1)
-            onClick={() => setDialog("sandboxLimit")}
+            // 한도가 차면 POST 없이 안내만 보여 준다(FE_API_GUIDE §5.1). 열려 있으면 서버에 요청한다
+            onClick={() =>
+              sandboxList.canAdd
+                ? api.addSandbox().then(() => notify("샌드박스를 추가했습니다"), fail)
+                : setDialog("sandboxLimit")
+            }
           >
             <IconPlus size={14} />
             <span>추가</span>
@@ -394,7 +398,7 @@ export function SandboxPanel() {
                     {s.tasks.length ? s.tasks.map((t) => t.name).join(", ") : "연결된 태스크 없음"}
                   </span>
                   <span>
-                    {s.provider}
+                    {s.securityLabel} · {s.provider}
                     {s.gatewayPort ? ` · 게이트웨이 ${s.gatewayPort}` : ""}
                   </span>
                 </div>
