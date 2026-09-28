@@ -4,8 +4,11 @@
  * - 소유자 토큰(RFA_ASK_TOKEN)은 여기서만 붙여 브라우저에 드러나지 않게 한다.
  *   이 컴퓨터(루프백)에서 연 화면에만 붙이고, 터널 · 다른 기기에서 온 요청은 게스트로 둔다
  *   (RFA_OWNER_REMOTE=1 이면 원격에도 붙인다). `X-RFA-Role: guest` 요청에도 붙이지 않는다.
+ *   /owner 로 한 번 들어온 브라우저(쿠키 rfa_owner=1)는 원격이어도 소유자다 — 검증 단계용 임시 입구.
  * - SSE(`POST /chat`, `POST /tasks`)는 버퍼링 없이 그대로 흘려 보내고, 브라우저가 끊으면(중지) 위로도 끊는다.
  */
+import { hasOwnerCookie } from "@/lib/owner";
+
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
@@ -48,7 +51,11 @@ async function proxy(req: Request, ctx: Ctx) {
     const v = req.headers.get(h);
     if (v) headers.set(h, v);
   }
-  if (TOKEN && req.headers.get("x-rfa-role") !== "guest" && (TRUST_REMOTE || isLocal(req)))
+  if (
+    TOKEN &&
+    req.headers.get("x-rfa-role") !== "guest" &&
+    (TRUST_REMOTE || isLocal(req) || hasOwnerCookie(req))
+  )
     headers.set("authorization", `Bearer ${TOKEN}`);
 
   const hasBody = req.method !== "GET" && req.method !== "HEAD";
