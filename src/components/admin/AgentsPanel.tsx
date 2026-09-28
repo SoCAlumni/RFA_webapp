@@ -526,7 +526,14 @@ function AgentDetailView({ id }: { id: string }) {
         </div>
         {!head.editable && head.readOnlyReason && <p className="adm-readonly">{head.readOnlyReason}</p>}
         {taskIds.length ? (
-          taskIds.map((t) => <SourcesPanel key={`${id}:${t}`} taskId={t} readOnly={readOnly || !head.editable} />)
+          head.tasks!.map((t) => (
+            <SourcesPanel
+              key={`${id}:${t.id}`}
+              taskId={t.id}
+              taskName={taskIds.length > 1 ? t.name : undefined}
+              readOnly={readOnly || !head.editable}
+            />
+          ))
         ) : (
           <SourcesPanel key={id} />
         )}

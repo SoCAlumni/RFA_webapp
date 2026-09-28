@@ -63,8 +63,29 @@ function remarkMark(sentences: string[]) {
 }
 
 /**
+ * GitHub 글에 흔한 접기 블록 <details><summary>제목</summary>본문</details> 만 골라 낸다.
+ * 다른 HTML 은 여전히 그리지 않는다. 요약은 태그를 벗긴 글자로, 본문은 같은 마크다운으로 그린다.
+ */
+const DETAILS = /<details[^>]*>\s*(?:<summary[^>]*>([\s\S]*?)<\/summary>)?([\s\S]*?)<\/details>/gi;
+
+type Part = { kind: "md"; text: string } | { kind: "details"; summary: string; body: string };
+
+function splitDetails(text: string): Part[] {
+  const parts: Part[] = [];
+  let last = 0;
+  for (const m of text.matchAll(DETAILS)) {
+    if (m.index > last) parts.push({ kind: "md", text: text.slice(last, m.index) });
+    const summary = (m[1] ?? "").replace(/<[^>]*>/g, "").trim() || "자세히";
+    parts.push({ kind: "details", summary, body: m[2] });
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) parts.push({ kind: "md", text: text.slice(last) });
+  return parts;
+}
+
+/**
  * 답변 · 원본 글의 마크다운(GFM: 표 · 목록 · 코드).
- * 외부에서 온 글이라 HTML 은 그리지 않는다(react-markdown 기본값).
+ * 외부에서 온 글이라 HTML 은 그리지 않는다(react-markdown 기본값). 예외는 위의 접기 블록뿐.
  */
 export const Markdown = memo(function Markdown({
   text,
@@ -84,11 +105,24 @@ export const Markdown = memo(function Markdown({
     () => (key ? [remarkGfm, remarkMark(key.split("\u0000"))] : [remarkGfm]),
     [key],
   );
+  const parts = useMemo(() => splitDetails(text), [text]);
+  const render = (md: string, k: number | string) => (
+    <ReactMarkdown key={k} remarkPlugins={plugins} components={components}>
+      {md}
+    </ReactMarkdown>
+  );
   return (
     <div className={`md ${className ?? ""}`}>
-      <ReactMarkdown remarkPlugins={plugins} components={components}>
-        {text}
-      </ReactMarkdown>
+      {parts.map((p, i) =>
+        p.kind === "md" ? (
+          render(p.text, i)
+        ) : (
+          <details key={i}>
+            <summary>{p.summary}</summary>
+            {render(p.body, `${i}-body`)}
+          </details>
+        ),
+      )}
       {tail}
     </div>
   );

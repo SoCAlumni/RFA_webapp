@@ -2355,6 +2355,21 @@ body.modal-open {
 .md p {
   white-space: pre-wrap;
 }
+/* GitHub 글의 접기 블록 (<details><summary>) */
+.md details {
+  margin: 0 0 10px;
+  border: 1px solid var(--line-2);
+  border-radius: 6px;
+  padding: 6px 10px;
+}
+.md details > summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--text-2);
+}
+.md details[open] > summary {
+  margin-bottom: 8px;
+}
 .md ul,
 .md ol {
   padding-left: 22px;

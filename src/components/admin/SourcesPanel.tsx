@@ -153,7 +153,16 @@ function AddSourceForm({ taskId, onDone }: { taskId: string; onDone: () => void 
 }
 
 /** 태스크 에이전트에 문의가 들어오는 곳(GitHub · Slack) — GET/POST/DELETE /tasks/{id}/sources */
-export function SourcesPanel({ taskId, readOnly }: { taskId?: string; readOnly?: boolean }) {
+/** taskName: 한 에이전트가 태스크를 여럿 맡으면 카드마다 어느 태스크의 소스인지 붙인다 */
+export function SourcesPanel({
+  taskId,
+  taskName,
+  readOnly,
+}: {
+  taskId?: string;
+  taskName?: string;
+  readOnly?: boolean;
+}) {
   const { sources, loadSources, removeSource } = useApp();
   const [adding, setAdding] = useState(false);
 
@@ -175,10 +184,10 @@ export function SourcesPanel({ taskId, readOnly }: { taskId?: string; readOnly?:
 
   const list = sources[taskId];
   return (
-    <section className="sp" aria-label="소스">
+    <section className="sp" aria-label={taskName ? `소스 · ${taskName}` : "소스"}>
       <div className="sp-head">
         <div>
-          <h3>소스</h3>
+          <h3>{taskName ? `소스 · ${taskName}` : "소스"}</h3>
           <span>문의가 들어오는 곳 · {list ? list.length : "…"}개</span>
         </div>
         {!adding && !readOnly && (
