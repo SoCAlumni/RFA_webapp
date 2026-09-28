@@ -8,7 +8,7 @@
 
 ## 호스팅
 
-- 데모 주소: <https://this-resorts-keyboards-theaters.trycloudflare.com> (Cloudflare Tunnel, `/chat` 으로 이동)
+- 데모 주소: <[https://this-resorts-keyboards-theaters.trycloudflare.com](https://includes-assets-registrar-mines.trycloudflare.com/)> (Cloudflare Tunnel, `/chat` 으로 이동)
 
 ## 실행
 
