@@ -21,6 +21,7 @@ import type {
   SourceOut,
   SourceToggleResult,
   TaskCreateRequest,
+  TaskDeleteResult,
   TaskEvent,
   TaskView,
 } from "./types";
@@ -38,6 +39,8 @@ export interface RfaApi {
 
   /* 태스크 추가 — SSE. 스트림 전 거절은 ApiError 로 던진다 */
   createTask(req: TaskCreateRequest, signal?: AbortSignal): AsyncIterable<TaskEvent>;
+  /** 태스크 삭제(owner, 만든 태스크만). 에이전트를 샌드박스에서 내리느라 오래 걸릴 수 있다 */
+  deleteTask(taskId: string): Promise<TaskDeleteResult>;
 
   /* 비서 대화 */
   listConversations(agentId: string): Promise<ConversationSummary[]>;

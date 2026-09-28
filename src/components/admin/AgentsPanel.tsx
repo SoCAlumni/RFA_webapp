@@ -4,9 +4,10 @@ import { AgentIcon, IconLink, IconPlus } from "@/components/icons";
 import { hasHangul } from "@/components/inbox/parts";
 import { Modal } from "@/components/Modal";
 import { errorText } from "@/lib/api";
-import type { AdminAgent, AdminAgentDetail, AdminStatus, PromptView } from "@/lib/api/types";
+import type { AdminAgent, AdminAgentDetail, AdminStatus, PromptView, TaskView } from "@/lib/api/types";
 import { dayTime, fmtNum } from "@/lib/format";
 import { useApp } from "@/store/app-store";
+import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { SourcesPanel } from "./SourcesPanel";
 
@@ -427,6 +428,52 @@ function StatsCard({ agent }: { agent: AdminAgentDetail }) {
   );
 }
 
+/** 만든 태스크(팀)의 supervisor 에서만: 태스크와 팀 에이전트를 지운다. 기본 태스크는 지울 수 없다 */
+function DeleteTaskCard({ task }: { task: TaskView }) {
+  const { deleteTask } = useApp();
+  const pathname = usePathname();
+  const router = useRouter();
+  const [busy, setBusy] = useState(false);
+  const [confirm, setConfirm] = useState(false);
+  const run = async () => {
+    setBusy(true);
+    const r = await deleteTask(task.id);
+    setBusy(false);
+    if (!r) return;
+    // 관리 창 아래에 지운 태스크의 결재함이나 그 에이전트와의 대화가 열려 있었다면 옮겨 둔다
+    const parts = pathname.split("/").filter(Boolean).map(decodeURIComponent);
+    if ((parts[0] === "inbox" && parts[1] === task.id) || (parts[0] === "chat" && parts[1] === task.agentId))
+      router.replace(parts[0] === "inbox" ? "/inbox" : "/chat");
+  };
+  return (
+    <section className="adm-card" aria-label="태스크 삭제">
+      <div className="adm-card-head">
+        <h3>태스크 삭제</h3>
+        <span>결재·대화 기록은 남습니다</span>
+      </div>
+      <div className="adm-actions">
+        <span className="rfa-hint">
+          「{task.name}」 태스크와 팀 에이전트를 샌드박스에서 내리고, 연결한 소스도 지웁니다.
+        </span>
+        <div className="grow" />
+        <button type="button" className="adm-btn" data-danger disabled={busy} onClick={() => setConfirm(true)}>
+          {busy && <span className="spin" aria-hidden="true" />}
+          {busy ? "삭제하는 중" : "태스크 삭제"}
+        </button>
+      </div>
+      {confirm && (
+        <ConfirmDialog
+          title="태스크를 삭제할까요?"
+          text={`「${task.name}」 태스크와 ${task.agentName}(팀 에이전트 전체)를 지웁니다. 연결한 소스와 에이전트 설정도 함께 지워지며 되돌릴 수 없습니다. 결재·대화 기록은 남습니다.`}
+          confirm="삭제"
+          onConfirm={run}
+          onClose={() => setConfirm(false)}
+        />
+      )}
+    </section>
+  );
+}
+
 function AgentDetailView({ id }: { id: string }) {
   const { adminDetails, loadAdminAgent, openAdmin, adminList, data } = useApp();
   const d = adminDetails[id];
@@ -444,6 +491,8 @@ function AgentDetailView({ id }: { id: string }) {
     );
   const readOnly = data?.me.role !== "owner";
   const taskIds = head.tasks?.map((t) => t.id) ?? [];
+  // 만든 태스크는 그 팀의 supervisor 화면에서 지운다(owner 만)
+  const ownTeamTask = readOnly ? undefined : data?.tasks.find((t) => t.source === "team" && t.worker === id);
   return (
     <>
       <div className="detail-bar">
@@ -480,6 +529,7 @@ function AgentDetailView({ id }: { id: string }) {
             <ContextCard agent={d} />
             <LoadedSourcesCard agent={d} />
             <StatsCard agent={d} />
+            {ownTeamTask && <DeleteTaskCard key={ownTeamTask.id} task={ownTeamTask} />}
           </>
         ) : (
           <div className="loading" style={{ height: 160 }}>

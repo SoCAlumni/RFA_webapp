@@ -77,6 +77,7 @@ export function createHttpApi(baseUrl: string, getRole: () => Role): RfaApi {
       for await (const env of sse<TaskEvent["data"]>("/tasks", req, signal))
         yield { type: env.type, data: env.data } as TaskEvent;
     },
+    deleteTask: (id) => call("DELETE", `/tasks/${q(id)}`),
 
     listConversations: (agentId) => call("GET", `/conversations?agentId=${q(agentId)}`),
     createConversation: (agentId) => call("POST", "/conversations", { agentId }),

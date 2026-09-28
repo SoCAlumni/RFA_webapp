@@ -432,6 +432,37 @@ function useAppState() {
     return () => clearInterval(t);
   }, [applying, refreshDirectory]);
 
+  /**
+   * 태스크 삭제(만든 태스크만). 팀 에이전트를 샌드박스에서 내리느라 수십 초 걸릴 수 있어 호출한 쪽이 로딩을 건다.
+   * 결재·대화 기록은 서버에 남는다. 열린 화면을 옮기는 일은 호출한 쪽이 한다
+   */
+  const deleteTask = useCallback(
+    async (taskId: string) => {
+      try {
+        const r = await api.deleteTask(taskId);
+        const gone = new Set([taskId, ...r.agents]);
+        patch((d) => ({
+          tasks: d.tasks.filter((t) => t.id !== taskId),
+          agents: d.agents.filter((a) => a.id !== taskId && a.taskId !== taskId),
+        }));
+        setSources((m) => omit(m, taskId));
+        setAdminList((l) => (l ? { ...l, agents: l.agents.filter((a) => !gone.has(a.id)) } : l));
+        setAdminDetails((m) => Object.fromEntries(Object.entries(m).filter(([id]) => !gone.has(id))));
+        setAdmin((a) => (a.agentId && gone.has(a.agentId) ? { ...a, agentId: undefined } : a));
+        // agentsApply error: 선언은 지워졌지만 샌드박스에 에이전트가 남았다 — 경고로 알린다
+        notify(r.message, r.agentsApply === "error" ? "error" : undefined);
+        refreshDirectory().catch(() => {});
+        loadAdmin();
+        loadInbox().catch(() => {});
+        return r;
+      } catch (e) {
+        fail(e);
+        return null;
+      }
+    },
+    [api, fail, loadAdmin, loadInbox, notify, patch, refreshDirectory],
+  );
+
   /* ---------- 소스 ---------- */
 
   const loadSources = useCallback(
@@ -604,6 +635,7 @@ function useAppState() {
     createTask,
     closeCreation,
     reopenCreation,
+    deleteTask,
     refreshDirectory,
     loadSources,
     addSource,

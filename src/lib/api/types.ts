@@ -88,6 +88,17 @@ export interface TaskCreateRequest {
   tags?: string[];
 }
 
+/** DELETE /tasks/{id} — 만든 태스크(source team)만. 결재·대화 기록은 남는다 */
+export interface TaskDeleteResult {
+  id: string;
+  /** 샌드박스에서 내린 에이전트(supervisor + 멤버) */
+  agents: string[];
+  /** error 면 선언은 지워졌지만 다음 적용 때까지 샌드박스에 남는다 */
+  agentsApply: "ok" | "error" | "skipped";
+  error?: string | null;
+  message: string;
+}
+
 export type TaskStageKey = "analyze" | "design" | "spawn";
 export type StageStatus = "running" | "done" | "error";
 
