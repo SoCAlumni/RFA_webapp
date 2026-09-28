@@ -43,3 +43,6 @@ next-env.d.ts
 !.env.example
 /.next-prod/
 /.next-check/
+
+# 로컬 배포 로그
+/logs/

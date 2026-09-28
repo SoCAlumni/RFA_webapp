@@ -1,0 +1,5 @@
+{
+  "_comment": "rfa_webfront 고정 포트. 3000 은 Langfuse 가 쓰므로 절대 사용하지 않는다. 바꾸려면 사람이 직접 고칠 것 — .claude/hooks/guard-port.mjs 가 에이전트의 변경을 막는다.",
+  "web": 3200,
+  "dev": 3100
+}

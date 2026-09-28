@@ -17,8 +17,8 @@ rfa_mas 프런트 API(`make serve`, 기본 `http://127.0.0.1:8799`)에 붙어 �
 ```bash
 cp .env.example .env.local   # RFA_API_URL, RFA_ASK_TOKEN(= rfa_mas .env.dev 의 RFA_ASK_TOKEN)
 npm install
-npm run dev                  # http://localhost:3000  (→ /chat)
-npm run build && npm start
+npm run dev                  # http://localhost:3100  (→ /chat)   ※ 3000 은 Langfuse 가 쓴다
+npm run deploy               # 프로덕션 빌드(.next-prod) 후 http://localhost:3200 에 (재)기동 — 포트는 ports.json 에 고정
 ```
 
 | 환경 변수 | 뜻 |
