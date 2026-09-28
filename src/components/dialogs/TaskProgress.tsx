@@ -20,13 +20,18 @@ type Member = { agentId?: string; role?: string };
 function StageDetail({ stage, detail }: { stage: string; detail: Record<string, unknown> }) {
   if (stage === "analyze") {
     const caps = (detail.capabilities as Cap[] | undefined) ?? [];
-    if (!caps.length) return null;
+    // source=fallback: LLM 분석이 실패해 서버가 키워드 규칙으로 역량을 골랐다
+    const fallback = detail.source === "fallback";
+    if (!caps.length && !fallback) return null;
     return (
-      <div className="tp-chips">
-        {caps.map((c, i) => (
-          <span key={c.id ?? i}>{c.label ?? c.id}</span>
-        ))}
-      </div>
+      <>
+        {fallback && <p className="tp-note">LLM 분석이 실패해 키워드 규칙으로 역량을 골랐습니다.</p>}
+        <div className="tp-chips">
+          {caps.map((c, i) => (
+            <span key={c.id ?? i}>{c.label ?? c.id}</span>
+          ))}
+        </div>
+      </>
     );
   }
   if (stage === "design") {

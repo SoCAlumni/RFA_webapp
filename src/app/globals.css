@@ -2479,6 +2479,11 @@ body.modal-open {
   gap: 8px;
   padding: 0 12px 12px 44px;
 }
+.tp-note {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-2);
+}
 .tp-chips {
   display: flex;
   flex-wrap: wrap;
