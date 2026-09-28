@@ -209,6 +209,12 @@ const PHASE: Record<DraftPhase, { status: string; title: string; tone: string }>
   closed: { status: "닫힘", title: "응답하지 않기로 했습니다", tone: "muted" },
 };
 
+/** 결재 서버가 RFA_PUBLISHER=mock 이면 채널을 부르지 않고 mock:// 주소만 남긴다 */
+export const isMockPosted = (d: InboxDetail) =>
+  d.draft.phase === "posted" && !!d.draft.postedUrl?.startsWith("mock://");
+
+const MOCK_POSTED = { status: "모의 게시", title: "승인했지만 채널에는 올리지 않았습니다", tone: "muted" };
+
 /** 결재 초안 카드: 뒷단 단계 · 편집 · 재생성 요청 · 바로 응답 */
 export function DraftCard({ detail, readOnly }: { detail: InboxDetail; readOnly?: boolean }) {
   const { edits, setDraftText, regenerate, respond, busyItems, itemErrors } = useApp();
@@ -220,7 +226,8 @@ export function DraftCard({ detail, readOnly }: { detail: InboxDetail; readOnly?
   const busy = busyItems[detail.id];
   const text = edits[detail.id] ?? draft.text;
   const phase = busy === "respond" ? "posting" : busy === "regenerate" ? "regenerating" : draft.phase;
-  const p = PHASE[phase] ?? PHASE.ready;
+  const mockPosted = isMockPosted(detail);
+  const p = mockPosted ? MOCK_POSTED : (PHASE[phase] ?? PHASE.ready);
   const editable = !readOnly && !busy && draft.phase === "ready" && draft.canRespond;
 
   useEffect(() => {
@@ -300,7 +307,9 @@ export function DraftCard({ detail, readOnly }: { detail: InboxDetail; readOnly?
               답변 초안{" "}
               <span>
                 {phase === "posted"
-                  ? `${where} 보냈습니다`
+                  ? mockPosted
+                    ? "모의 게시 · 보내지 않았습니다"
+                    : `${where} 보냈습니다`
                   : phase === "regenerating"
                     ? "새 초안을 기다리는 중"
                     : readOnly
@@ -338,7 +347,12 @@ export function DraftCard({ detail, readOnly }: { detail: InboxDetail; readOnly?
           {itemErrors[detail.id]}
         </p>
       )}
-      {phase === "posted" ? (
+      {mockPosted ? (
+        // 결재 서버가 RFA_PUBLISHER=mock 이면 채널을 부르지 않고 mock:// 주소만 남긴다
+        <p className="dc-note">
+          모의 게시로 처리했습니다 · 결재 서버가 모의 게시 모드라 GitHub · Slack 에는 올리지 않았습니다
+        </p>
+      ) : phase === "posted" ? (
         <p className="dc-posted">
           <Check /> 응답했습니다 ·{" "}
           {draft.postedUrl?.startsWith("http") ? (

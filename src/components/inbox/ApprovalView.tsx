@@ -15,14 +15,15 @@ import type { GithubSource, InboxDetail, SlackSource, ThreadMessage } from "@/li
 import { ago, clock, dayTime, initialsOf } from "@/lib/format";
 import { useData } from "@/store/app-store";
 import Link from "next/link";
-import { DraftCard } from "./DraftCard";
+import { DraftCard, isMockPosted } from "./DraftCard";
 import { chatHref } from "./InboxList";
 import { BadgePill, RequesterAvatar, channelColor, hasHangul } from "./parts";
 
 /** 결재 전 · 후 에이전트 자리 문구 */
 function slotText(d: InboxDetail, desk: string, where: "comment" | "reply") {
   const phase = d.draft.phase;
-  if (phase === "posted") return null;
+  if (phase === "posted")
+    return isMockPosted(d) ? "결재 서버가 모의 게시 모드라 이 자리에 실제로 올리지 않았습니다." : null;
   if (phase === "closed") return `${desk} 에이전트는 이 요청에 응답하지 않기로 했습니다.`;
   return where === "comment"
     ? `${desk} 에이전트의 댓글은 결재가 끝나면 이 자리에 등록됩니다.`
@@ -241,7 +242,7 @@ const ARRIVED: Record<string, string> = { github: "GitHub 이슈로 들어옴", 
 export function ApprovalView({ detail: d, readOnly }: { detail: InboxDetail; readOnly?: boolean }) {
   const { tasks } = useData();
   const desk = d.agent?.desk ?? d.task?.id ?? "대응";
-  const posted = d.draft.phase === "posted" ? d.draft.text : undefined;
+  const posted = d.draft.phase === "posted" && !isMockPosted(d) ? d.draft.text : undefined;
   const isGithub = d.source.kind === "github";
   const slackDm = d.source.kind === "slack" && !!(d.source as SlackSource).dm;
   const arrived = slackDm ? "Slack 다이렉트 메시지로 들어옴" : (ARRIVED[d.channel] ?? `${d.channelLabel}로 들어옴`);
