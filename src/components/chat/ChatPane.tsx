@@ -216,6 +216,7 @@ function AgentRow({
   call,
   onRefClick,
   skipped,
+  stopped,
 }: {
   agent?: AgentView;
   agentId: string;
@@ -225,6 +226,8 @@ function AgentRow({
   onRefClick?: (r: RefLink) => void;
   /** agents.select 에서 제외됨(사유) */
   skipped?: string;
+  /** 사용자가 중지한 턴: 끝나지 않은 호출은 실패가 아니라 중지다 */
+  stopped?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const s = call?.status;
@@ -237,7 +240,9 @@ function AgentRow({
           ? `해당 없음 · ${seconds(call.durationMs)}`
           : s === "blocked"
             ? "샌드박스 정책으로 차단됨"
-            : "실패"
+            : stopped
+              ? "중지됨"
+              : "실패"
     : skipped !== undefined
       ? "제외"
       : "찾음";
@@ -260,7 +265,7 @@ function AgentRow({
           <b>{agent?.name ?? agentId}</b>
           <span>{line}</span>
         </span>
-        <span className="cp-agent-status" data-status={s ?? "found"}>
+        <span className="cp-agent-status" data-status={stopped && s === "error" ? "stopped" : (s ?? "found")}>
           {call ? (
             s === "running" ? <Spin /> : s === "ok" ? <Check /> : s === "none" ? <Dash /> : <Cross />
           ) : skipped !== undefined ? (
@@ -386,6 +391,7 @@ function Trace({
                       score={p.score}
                       call={turn.calls.find((c) => c.agentId === p.agentId)}
                       skipped={p.skipped}
+                      stopped={turn.status === "stopped"}
                       onRefClick={onRefClick}
                     />
                   ))}
